@@ -1,14 +1,19 @@
 package studio.material;
 
 import java.io.Serializable;
+import java.nio.charset.StandardCharsets;
+import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import java.util.regex.Pattern;
 
 import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpSession;
+import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Select;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.HttpStatus;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.stereotype.Service;
@@ -26,16 +31,21 @@ record User(long id, String username, String displayName, String passwordHash) {
 record SessionUser(long id, String username, String displayName) implements Serializable {}
 record UserView(String username, String displayName) {}
 record Login(String username, String password) {}
+record Registration(String username, String displayName, String password) {}
 
 @Mapper
 interface UserMapper {
     @Select("SELECT id, username, display_name, password_hash FROM users WHERE username = #{username}")
     User find(String username);
+
+    @Insert("INSERT INTO users (username, display_name, password_hash) VALUES (#{username}, #{displayName}, #{passwordHash})")
+    void insert(String username, String displayName, String passwordHash);
 }
 
 @Service
 class Accounts {
     private static final String SESSION_USER = "studio.user";
+    private static final Pattern USERNAME = Pattern.compile("[a-z0-9][a-z0-9_-]{2,39}");
     private final UserMapper users;
     private final BCryptPasswordEncoder encoder = new BCryptPasswordEncoder();
 
@@ -44,12 +54,45 @@ class Accounts {
     }
 
     UserView login(Login credentials, HttpServletRequest request) {
-        User user = credentials.username() == null ? null : users.find(credentials.username());
+        String username = normalizeUsername(credentials.username());
         String password = credentials.password();
-        if (user == null || password == null || password.length() > 72
-                || !encoder.matches(password, user.passwordHash())) {
+        User user = USERNAME.matcher(username).matches() && passwordFits(password) ? users.find(username) : null;
+        if (user == null || !encoder.matches(password, user.passwordHash())) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "账号或密码错误。");
         }
+        return startSession(user, request);
+    }
+
+    UserView register(Registration registration, HttpServletRequest request) {
+        String username = normalizeUsername(registration.username());
+        String name = registration.displayName() == null ? "" : registration.displayName().strip();
+        String password = registration.password();
+        if (!USERNAME.matcher(username).matches()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "用户名须为 3–40 个英文字母、数字、下划线或连字符，并以英文字母或数字开头。");
+        }
+        if (name.isEmpty() || name.length() > 80 || name.codePoints().anyMatch(Character::isISOControl)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请输入 1–80 个字符的显示名称。");
+        }
+        if (!passwordFits(password) || password.length() < 8 || password.isBlank()) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "密码至少 8 个字符，UTF-8 编码最多 72 字节。");
+        }
+        try {
+            users.insert(username, name, encoder.encode(password));
+        } catch (DuplicateKeyException error) {
+            throw new ResponseStatusException(HttpStatus.CONFLICT, "该用户名已被使用。");
+        }
+        return startSession(users.find(username), request);
+    }
+
+    private static String normalizeUsername(String username) {
+        return username == null ? "" : username.strip().toLowerCase(Locale.ROOT);
+    }
+
+    private static boolean passwordFits(String password) {
+        return password != null && password.length() <= 72 && password.getBytes(StandardCharsets.UTF_8).length <= 72;
+    }
+
+    private UserView startSession(User user, HttpServletRequest request) {
         logout(request);
         request.getSession(true).setAttribute(SESSION_USER,
                 new SessionUser(user.id(), user.username(), user.displayName()));
@@ -64,7 +107,7 @@ class Accounts {
     long requireOwner(HttpServletRequest request) {
         SessionUser user = current(request);
         if (user == null) {
-            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "请先登录演示账号。");
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "请先登录账号。");
         }
         String expected = request.getHeader("X-Studio-Account");
         if (expected != null && !expected.equals(user.username())) {
@@ -100,6 +143,12 @@ class SessionController {
     @PostMapping
     Map<String, UserView> login(@RequestBody Login login, HttpServletRequest request) {
         return Map.of("user", accounts.login(login, request));
+    }
+
+    @PostMapping("/register")
+    @ResponseStatus(HttpStatus.CREATED)
+    Map<String, UserView> register(@RequestBody Registration registration, HttpServletRequest request) {
+        return Map.of("user", accounts.register(registration, request));
     }
 
     @PostMapping("/logout")

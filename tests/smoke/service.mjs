@@ -172,6 +172,32 @@ async function validate() {
   assert.equal(terminal.find((task) => task.id === first.id).status, "SUCCEEDED");
   assert.ok(terminal.filter((task) => task.id !== first.id).every((task) => task.status === "FAILED"));
   console.log("Catalog, upload boundaries, concurrent idempotency, three stages and terminal states verified.");
+
+  const credentials = { username: "personal-smoke", password: "studio-private-26" };
+  const registration = { ...credentials, username: " Personal-Smoke ", displayName: " 个人验收 " };
+  await request(web, "/api/session/register", { status: 400, json: { ...registration, password: "短".repeat(25) } });
+  const registered = await request(web, "/api/session/register", { json: registration, status: 201 });
+  const personal = registered.headers.getSetCookie()[0].split(";")[0];
+  assert.deepEqual(await registered.json(), { user: { username: credentials.username, displayName: "个人验收" } });
+  await request(web, "/api/session/register", { json: registration, status: 409 });
+  const personalAsset = await upload(web, personal);
+  const personalId = await submit(web, personal, personalAsset, 0);
+  const personalTask = await waitForTask(personal, personalId, (task) => task.status === "SUCCEEDED");
+  const otherHistory = await (await request(web, "/api/tasks/history", { cookie: other })).json();
+  assert.ok(otherHistory.items.every((task) => task.id !== personalId));
+  await request(web, "/api/assets/" + personalAsset + "/content", { cookie: other, status: 404 });
+  await request(web, "/api/tasks/" + personalId, { cookie: other, status: 404 });
+  await request(web, personalTask.resultUrl, { cookie: other, status: 404 });
+  await request(web, "/api/session/logout", { cookie: personal, json: {}, status: 204 });
+  await request(web, "/api/tasks/history", { cookie: personal, status: 401 });
+  await request(web, "/api/session", { status: 401, json: { ...credentials, password: "incorrect" } });
+  const signedIn = await request(web, "/api/session", { json: credentials });
+  const renewed = signedIn.headers.getSetCookie()[0].split(";")[0];
+  assert.notEqual(renewed, personal);
+  const ownHistory = await (await request(web, "/api/tasks/history", { cookie: renewed })).json();
+  assert.deepEqual(ownHistory.items.map((task) => task.id), [personalId]);
+  await request(web, personalTask.resultUrl, { cookie: renewed });
+  console.log("Personal registration, sign-out and sign-in, and persisted history and result ownership verified.");
 }
 
 async function prepare(restart) {

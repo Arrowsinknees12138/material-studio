@@ -11,6 +11,7 @@ import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.autoconfigure.web.servlet.WebMvcTest;
 import org.springframework.context.annotation.Import;
 import org.springframework.core.io.ByteArrayResource;
+import org.springframework.dao.DuplicateKeyException;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.mock.web.MockHttpSession;
@@ -43,6 +44,53 @@ class TaskHttpTest {
     @MockitoBean FileStorage storage;
 
     @Test
+    void registrationHashesPasswordAndReplacesTheCurrentSession() throws Exception {
+        MockHttpSession old = signIn();
+        doAnswer(invocation -> {
+            String hash = invocation.getArgument(2);
+            assertNotEquals("personal-secret", hash);
+            assertTrue(new BCryptPasswordEncoder().matches("personal-secret", hash));
+            when(users.find("alice-1")).thenReturn(new User(12L, "alice-1", "爱丽丝", hash));
+            return null;
+        }).when(users).insert(eq("alice-1"), eq("爱丽丝"), anyString());
+
+        var response = mvc.perform(post("/api/session/register").session(old).header("X-Studio-Request", "1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"username":" Alice-1 ","displayName":" 爱丽丝 ","password":"personal-secret"}
+                                """))
+                .andExpect(status().isCreated())
+                .andExpect(jsonPath("$.user.username").value("alice-1"))
+                .andExpect(jsonPath("$.user.displayName").value("爱丽丝"))
+                .andExpect(jsonPath("$.user.password").doesNotExist())
+                .andReturn();
+        var session = (MockHttpSession) response.getRequest().getSession(false);
+        assertTrue(old.isInvalid());
+        assertNotNull(session);
+        assertNotEquals(old.getId(), session.getId());
+        mvc.perform(get("/api/session").session(session))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.user.username").value("alice-1"));
+    }
+
+    @Test
+    void duplicateRegistrationPreservesTheCurrentSession() throws Exception {
+        MockHttpSession session = signIn();
+        doThrow(new DuplicateKeyException("duplicate")).when(users).insert(eq("lin"), anyString(), anyString());
+
+        mvc.perform(post("/api/session/register").session(session).header("X-Studio-Request", "1")
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("""
+                                {"username":"LIN","displayName":"Other","password":"personal-secret"}
+                                """))
+                .andExpect(status().isConflict())
+                .andExpect(jsonPath("$.message").value("该用户名已被使用。"));
+        assertFalse(session.isInvalid());
+        mvc.perform(get("/api/session").session(session))
+                .andExpect(jsonPath("$.user.username").value("lin"));
+    }
+
+    @Test
     void writeRequestsRequireTheOperationHeaderAndNeverReachTheServiceWithoutIt() throws Exception {
         mvc.perform(post("/api/tasks").session(signIn())
                         .contentType(MediaType.APPLICATION_JSON).content(SUBMISSION))
@@ -73,7 +121,7 @@ class TaskHttpTest {
     void rejectsAnonymousAndStaleAccountReadsBeforeAccessingHistory() throws Exception {
         mvc.perform(get("/api/tasks/history"))
                 .andExpect(status().isUnauthorized())
-                .andExpect(jsonPath("$.message").value("请先登录演示账号。"));
+                .andExpect(jsonPath("$.message").value("请先登录账号。"));
         mvc.perform(get("/api/tasks/history").session(signIn()).header("X-Studio-Account", "zhou"))
                 .andExpect(status().isUnauthorized())
                 .andExpect(jsonPath("$.message").value("账号已切换，请重试。"));

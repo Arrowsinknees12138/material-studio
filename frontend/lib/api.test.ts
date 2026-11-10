@@ -160,13 +160,13 @@ describe("API request contract", () => {
     target.addEventListener(sessionCheckEvent, check);
     vi.stubGlobal("window", target);
     const pending = Promise.withResolvers<Response>();
-    const expired = () => Response.json({ message: "请先登录演示账号。" }, { status: 401 });
+    const expired = () => Response.json({ message: "请先登录账号。" }, { status: 401 });
     vi.stubGlobal("fetch", vi.fn<typeof fetch>()
       .mockResolvedValueOnce(expired())
       .mockReturnValueOnce(pending.promise));
     const url = "/api/tasks/task-1/result";
 
-    await expect(fetchImage(url)).rejects.toMatchObject({ status: 401, message: "请先登录演示账号。" });
+    await expect(fetchImage(url)).rejects.toMatchObject({ status: 401, message: "请先登录账号。" });
     expect(check).toHaveBeenCalledTimes(1);
 
     const controller = new AbortController();
