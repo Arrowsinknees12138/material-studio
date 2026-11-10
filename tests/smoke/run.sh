@@ -56,6 +56,6 @@ api_containers=$(compose ps -q api)
 compose kill -s SIGKILL db
 # Leave the database down beyond the saved stage deadline.
 sleep 7
-compose start --wait --wait-timeout 120 db
+compose up -d --no-recreate --wait --wait-timeout 120 db
 [[ $(compose ps -q api) == "$api_containers" ]]
 runner service.mjs verify "$task" "$used"
