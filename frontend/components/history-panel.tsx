@@ -28,6 +28,7 @@ export function useHistory(templateId?: string) {
   const [scan, setScan] = useState(0);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
   const loadedMore = useRef(false);
+  const firstPageIds = useRef(new Set<string>());
   const feed = useRef<ReturnType<typeof createTaskFeed> | null>(null);
 
   useEffect(() => {
@@ -50,8 +51,15 @@ export function useHistory(templateId?: string) {
       .then((page) => {
         if (controller.signal.aborted) return;
         feed.current?.add(page.items);
-        if (request.cursor || !loadedMore.current) setNextCursor(page.nextCursor);
-        if (request.cursor) loadedMore.current = true;
+        if (request.cursor) {
+          loadedMore.current = true;
+          setNextCursor(page.nextCursor);
+        } else {
+          const overlaps = page.items.some((task) => firstPageIds.current.has(task.id));
+          // A full page of new tasks can leave a gap before the previously loaded records.
+          if (!loadedMore.current || !overlaps) setNextCursor(page.nextCursor);
+          firstPageIds.current = new Set(page.items.map((task) => task.id));
+        }
       })
       .catch((problem) => { if (!controller.signal.aborted) setError(errorMessage(problem)); })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });

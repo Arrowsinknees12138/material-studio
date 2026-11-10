@@ -130,7 +130,42 @@ try {
   await history.locator('img[src="/api/tasks/' + unattended + '/result"]').waitFor();
   await history.goto("/templates/nonexistent");
   await history.getByRole("heading", { name: "找不到这个模板" }).waitFor();
-  console.log("Catalog, lost submission response and idempotent retry, query recovery, refresh, idle polling and closing the page verified.");
+
+  function records(from, to) {
+    return Array.from({ length: to - from + 1 }, (_, index) => {
+      const number = to - index;
+      return {
+        id: "history-" + number, templateId: "desert", templateTitle: "沙丘日记",
+        status: "FAILED", stage: "GENERATE", errorMessage: "分页记录 " + number,
+        createdAt: new Date(Date.UTC(2026, 0, 1) + number * 1000).toISOString(),
+        completedAt: null, resultUrl: null,
+      };
+    });
+  }
+  let rows = records(1, 21);
+  await history.route((url) => url.pathname === "/api/tasks/history", async (route) => {
+    const query = new URL(route.request().url()).searchParams;
+    if (query.has("active")) return route.fulfill({ json: { items: [], nextCursor: null } });
+    const cursor = query.get("cursor");
+    const start = cursor ? rows.findIndex((item) => item.id === cursor) + 1 : 0;
+    const items = rows.slice(start, start + 20);
+    const nextCursor = start + items.length < rows.length ? items.at(-1).id : null;
+    await route.fulfill({ json: { items, nextCursor } });
+  });
+  await history.goto("/history");
+  const loadMore = history.getByRole("button", { name: "加载更多记录" });
+  await loadMore.click();
+  await history.getByText("分页记录 1", { exact: true }).waitFor();
+  await loadMore.waitFor({ state: "hidden" });
+
+  rows = [...records(22, 42), ...rows];
+  await history.getByRole("button", { name: "刷新历史记录" }).click();
+  await history.getByText("分页记录 42", { exact: true }).waitFor();
+  assert.equal(await history.getByText("分页记录 22", { exact: true }).count(), 0);
+  await loadMore.click();
+  await history.getByText("分页记录 22", { exact: true }).waitFor();
+  assert.equal(await history.locator(".task-card").count(), 42);
+  console.log("Catalog, idempotent retry, query recovery, refresh and close lifecycle, and disjoint history pagination verified.");
 } finally {
   await browser.close();
 }
