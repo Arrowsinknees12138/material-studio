@@ -152,12 +152,6 @@ export function StudioShell({ children }: { children: ReactNode }) {
           <IconButton component={Link} href="/templates" aria-label="素材工场首页" className="brand-mark">
             <AutoAwesome fontSize="small" />
           </IconButton>
-          <Stack component="nav" aria-label="主导航" direction="row" spacing={0.5}>
-            <Button component={Link} href="/templates" color="inherit"
-              aria-current={pathname.startsWith("/templates") ? "page" : undefined}>模板库</Button>
-            <Button component={Link} href="/history" color="inherit"
-              aria-current={pathname === "/history" ? "page" : undefined}>我的制作</Button>
-          </Stack>
           <Button color="inherit" aria-label="当前账号与切换" aria-haspopup="dialog" onClick={() => {
             setError(null);
             setShowAccess(false);

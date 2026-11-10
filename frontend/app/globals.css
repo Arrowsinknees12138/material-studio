@@ -13,7 +13,6 @@ img[hidden] { display: none !important; }
 .header-inner .brand-mark { width: 32px; height: 32px; margin-right: auto; border-radius: 8px; background: #c8f137; color: #19123d; }
 .header-inner .brand-mark:hover { background: #dcfa75; }
 .header-inner .MuiButton-root { min-width: 0; }
-.header-inner nav [aria-current] { background: #242429; }
 .shell-error { margin: 8px 15px 0; }
 
 .catalog-page { padding: 20px 15px; }
