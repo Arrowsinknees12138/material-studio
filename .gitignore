@@ -1,0 +1,10 @@
+.env
+.idea/
+.vscode/
+*.log
+frontend/node_modules/
+frontend/.next/
+frontend/next-env.d.ts
+frontend/*.tsbuildinfo
+backend/target/
+backend/data/

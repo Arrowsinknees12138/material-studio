@@ -1,0 +1,30 @@
+spring:
+  datasource:
+    url: ${DATABASE_URL:jdbc:mysql://localhost:3306/material_studio?connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true}
+    username: ${DATABASE_USER:studio}
+    password: ${DATABASE_PASSWORD:studio-local}
+  servlet:
+    multipart:
+      max-file-size: 5MB
+      max-request-size: 6MB
+server:
+  servlet:
+    session:
+      timeout: 8h
+      cookie:
+        name: STUDIO_SESSION
+        http-only: true
+        same-site: lax
+        secure: ${SESSION_COOKIE_SECURE:false}
+mybatis:
+  configuration:
+    map-underscore-to-camel-case: true
+    arg-name-based-constructor-auto-mapping: true
+studio:
+  storage-path: ${STORAGE_PATH:./data}
+  simulation:
+    enabled: ${SIMULATION_ENABLED:false}
+    check-ms: ${SIM_CHECK_MS:2000}
+    generate-ms: ${SIM_GENERATE_MS:5000}
+    finalize-ms: ${SIM_FINALIZE_MS:2000}
+  worker-delay-ms: ${WORKER_DELAY_MS:400}
