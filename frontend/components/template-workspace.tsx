@@ -4,6 +4,7 @@
 import Link from "next/link";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { ApiError, api, errorMessage, jsonBody, type Asset, type Task, type Template } from "../lib/api";
+import { hasAllowedImageType, imageAccept } from "../lib/image-upload";
 import { HistoryPanel, useHistory } from "./history-panel";
 import { AccountPrompt, useSession } from "./studio-shell";
 
@@ -20,9 +21,10 @@ function UploadSlot({ index, slot, template, choose, remove }: {
   remove: () => void;
 }) {
   const input = useRef<HTMLInputElement>(null);
+  const chooseButton = useRef<HTMLButtonElement>(null);
   return (
     <div className={"upload-slot" + (slot?.state === "ready" ? " uploaded" : "")}>
-      <input className="sr-only" type="file" accept={template.acceptedMimeTypes.join(",")}
+      <input className="sr-only" type="file" accept={imageAccept(template.acceptedMimeTypes)}
         aria-label={"选择第 " + (index + 1) + " 张图片"} tabIndex={-1} ref={input}
         onChange={(event) => {
           const file = event.currentTarget.files?.[0];
@@ -37,13 +39,13 @@ function UploadSlot({ index, slot, template, choose, remove }: {
         {slot && <span className="file-name" title={slot.file.name}>{slot.file.name}</span>}
         {slot?.state === "error" && <p className="task-error" role="alert">{slot.message}</p>}
         <div className="slot-actions">
-          <button type="button" className={slot ? "text-button" : "upload-trigger"}
+          <button ref={chooseButton} type="button" className={slot ? "text-button" : "upload-trigger"}
             aria-label={slot ? "替换素材 " + (index + 1) : "选择素材 " + (index + 1)}
             onClick={() => input.current?.click()}>{slot ? "替换" : "选择图片"}</button>
           {slot?.state === "error" && <button type="button" className="text-button"
-            onClick={() => choose(slot.file)}>重试上传</button>}
+            onClick={() => { chooseButton.current?.focus(); choose(slot.file); }}>重试上传</button>}
           {slot && <button type="button" className="text-button" aria-label={"移除素材 " + (index + 1)}
-            onClick={remove}>移除</button>}
+            onClick={() => { chooseButton.current?.focus(); remove(); }}>移除</button>}
         </div>
       </div>
     </div>
@@ -80,17 +82,23 @@ function CreationForm({ template, accept }: { template: Template; accept: (task:
   async function upload(index: number, file: File) {
     remove(index);
     setFeedback(null);
-    if (!template.acceptedMimeTypes.includes(file.type) || file.size === 0 || file.size > template.maxFileSizeBytes) {
+    if (file.size === 0 || file.size > template.maxFileSizeBytes) {
       updateSlot(index, { state: "error", file, message: "请选择大小符合要求的 JPEG 或 PNG 图片。" });
       return;
     }
     const controller = new AbortController();
     uploadRequests.current.set(index, controller);
     updateSlot(index, { state: "uploading", file });
-    const form = new FormData();
-    form.set("templateId", template.id);
-    form.set("file", file);
     try {
+      const allowed = await hasAllowedImageType(file, template.acceptedMimeTypes);
+      if (controller.signal.aborted) return;
+      if (!allowed) {
+        updateSlot(index, { state: "error", file, message: "请选择有效的 JPEG 或 PNG 图片。" });
+        return;
+      }
+      const form = new FormData();
+      form.set("templateId", template.id);
+      form.set("file", file);
       const asset = await api<Asset>("/assets", { method: "POST", body: form, signal: controller.signal });
       if (uploadRequests.current.get(index) === controller) updateSlot(index, { state: "ready", file, asset });
     } catch (error) {

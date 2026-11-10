@@ -55,20 +55,29 @@ export class ApiError extends Error {
 
 export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
   const headers = new Headers(options.headers);
-  if (options.method && options.method !== "GET") headers.set("X-Studio-Request", "1");
-  let response: Response;
+  const method = options.method?.toUpperCase() ?? "GET";
+  if (method !== "GET") headers.set("X-Studio-Request", "1");
+
+  const timeout = new AbortController();
+  const signal = options.signal ? AbortSignal.any([options.signal, timeout.signal]) : timeout.signal;
+  const timer = setTimeout(() => timeout.abort(), method === "GET" ? 8000 : 30000);
+
   try {
-    response = await fetch("/api" + path, { ...options, headers, cache: "no-store" });
+    const response = await fetch("/api" + path, { ...options, headers, signal, cache: "no-store" });
+    if (!response.ok) {
+      const payload = await response.json().catch(() => null);
+      throw new ApiError(response.status, payload?.message ?? "请求失败，请重试。");
+    }
+    if (response.status === 204) return undefined as T;
+    return await response.json() as T;
   } catch (error) {
     if (options.signal?.aborted) throw error;
+    if (timeout.signal.aborted) throw new ApiError(0, "请求超时，请重试。");
+    if (error instanceof ApiError) throw error;
     throw new ApiError(0, "网络连接暂时不可用，请重试。");
+  } finally {
+    clearTimeout(timer);
   }
-  if (!response.ok) {
-    const payload = await response.json().catch(() => null);
-    throw new ApiError(response.status, payload?.message ?? "请求失败，请重试。");
-  }
-  if (response.status === 204) return undefined as T;
-  return response.json() as Promise<T>;
 }
 
 export function jsonBody(data: object, signal?: AbortSignal): RequestInit {

@@ -8,3 +8,4 @@ frontend/next-env.d.ts
 frontend/*.tsbuildinfo
 backend/target/
 backend/data/
+tests/smoke/node_modules/

@@ -131,14 +131,14 @@ cd backend
 
 任务对象字段为 `id`、`templateId`、`templateTitle`、`status`、`stage`、`createdAt`、`completedAt`、`resultUrl`、`errorMessage`。时间以 UTC ISO 8601 返回。提交的 `requestId` 为 UUID，同一用户重复提交同一个 `requestId` 时返回原任务。成功受理一条任务后，下一次制作应使用新的 `requestId`。
 
-Java 使用 BCrypt 校验演示账号，身份保存在由 Spring Session JDBC 管理的 MySQL 会话。Cookie 设置 `HttpOnly` 和 `SameSite=Lax`。Java 使用会话用户过滤任务、素材和结果。跨账号读取资源返回 `404`，登录失效时私有接口返回 `401`。上传按模板校验格式、大小及图片内容。模拟器读取已保存的文件，上传预览同样来自服务端。
+Java 使用 BCrypt 校验演示账号，身份保存在由 Spring Session JDBC 管理的 MySQL 会话。Cookie 设置 `HttpOnly` 和 `SameSite=Lax`。Java 使用会话用户过滤任务、素材和结果。跨账号读取资源返回 `404`，登录失效时私有接口返回 `401`。浏览器按文件头识别 JPEG 或 PNG，即使系统没有提供 MIME 也可上传。Java 按模板校验大小并解码校验内容。模拟器读取已保存的文件，上传预览同样来自服务端。
 
 ## 任务执行与前端状态
 
 - 提交事务写入 `QUEUED` 任务及素材关联。事务完成后返回任务信息，worker 独立扫描到期任务。
 - Java 将任务切换为 `RUNNING / CHECK_INPUTS`，保存该阶段的到期时间。到期后检查素材可读性，再推进到 `GENERATE`、`FINALIZE`。阶段、到期时间和生成的样图名随检查点提交。模拟延迟期间不占用线程或事务。到期后的短事务通过 `FOR UPDATE SKIP LOCKED` 锁定一条任务，在提交前完成该阶段的少量本地文件操作。
 - 结果整理将该模板预置的 JPEG 写到数据卷，再置为 `SUCCEEDED`。任何步骤失败都停止后续步骤，保留失败阶段和原因，状态为 `FAILED`。
-- Web 按任务 ID 合并历史和查询结果。各任务独立轮询，进入终态后停止。请求失败保留已有任务数据并允许手动恢复查询。换账号或离开页面时取消请求和计时器。
+- Web 按任务 ID 合并历史和查询结果。各任务独立轮询，进入终态后停止。读取请求超过 8 秒会取消本次请求，并显示可重试的查询错误。已有任务状态保留，其他任务继续更新。换账号或离开页面时取消请求和计时器。
 - Java 重启后从已提交的阶段继续。若进程在一个步骤提交前中断，其他实例或重启后的实例会重新执行该步骤。结果路径由任务 ID 确定，重复整理同一份样图时使用原子文件替换。已提交的步骤会保留，MySQL 会话在有效期内也可以继续使用。
 
 ### 多实例与断点续作
@@ -175,8 +175,18 @@ docker compose ps api
 - 双 Java 实例容器验证了跨实例会话和文件读取。强制终止两个实例后，任务从已保存的结果整理阶段继续完成。旧版 V2 数据升到 V4 后，原历史与结果仍可读取，旧版处理中任务继续执行。另验证了素材过期清理与任务提交竞争时的数据一致性。
 - 浏览器实际操作验证了模板筛选、上传、提交、刷新恢复、结果预览和账号切换。没有做公网部署。
 
+### Compose 回归
+
+在 Linux、macOS Bash 4+ 或 Windows Git Bash 中运行：
+
+```bash
+bash tests/smoke/run.sh
+```
+
+GitHub Actions 的 `compose-smoke` 任务也运行这套检查。脚本使用独立 Compose 项目和临时数据卷，测试结束后清理这些资源。Chromium 测试在 320px 视口验证键盘上传、无 MIME 的有效图片、伪造文件、上传替换与移除的迟到响应，以及结果预览焦点。服务端测试验证共享会话、指定阶段失败、Java 进程重启、MySQL 短暂不可用后的恢复，以及清理后文件与记录的一致性。
+
 ## AI 工作流与来源
 
 使用 Codex 辅助实现。先按题目拆分为 Java 业务与持久化、页面状态、容器和验收，再把明确的职责边界和截图布局提供给 Codex。按模块生成并检查实现，最后通过容器构建、单元测试和接口烟测对照题目修正。一个例子是把查询异常单独存为 `queryError`，用两个并发请求的测试让一个任务返回失败、另一个查询断网，确认后者保留已知的运行阶段，并在查询恢复后只更新自己的卡片。
 
-视觉布局参考题目截图。JPEG 封面和结果由 Python 与 Pillow 程序化绘制，随项目离线交付，未使用截图内的品牌和素材。工程采用 Next.js、Spring Boot、MyBatis 等开源依赖，未复制第三方业务代码。共享会话迁移遵循 Spring Session JDBC 的 MySQL 表结构。 [Spring Session JDBC](https://docs.spring.io/spring-session/reference/configuration/jdbc.html)Maven Wrapper 脚本取自 Apache Maven Wrapper 3.3.4 的 only-script 模板。
+视觉布局参考题目截图。JPEG 封面和结果由 Python 与 Pillow 程序化绘制，随项目离线交付，未使用截图内的品牌和素材。工程采用 Next.js、Spring Boot、MyBatis 等开源依赖，未复制第三方业务代码。Compose 回归使用 Playwright 安装并运行 Chromium。共享会话迁移遵循 Spring Session JDBC 的 MySQL 表结构。 [Spring Session JDBC](https://docs.spring.io/spring-session/reference/configuration/jdbc.html)Maven Wrapper 脚本取自 Apache Maven Wrapper 3.3.4 的 only-script 模板。

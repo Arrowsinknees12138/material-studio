@@ -33,3 +33,9 @@ jobs:
           java-version: 21
           cache: maven
       - run: mvn -B verify
+  compose-smoke:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+      - run: bash tests/smoke/run.sh
