@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { Alert, Box, Button, Card, CardActionArea, Chip, Skeleton, Stack, Typography } from "@mui/material";
 import { useEffect, useState } from "react";
 import { TemplateCover } from "../../components/template-cover";
 import { api, errorMessage, type Catalog } from "../../lib/api";
@@ -28,58 +29,55 @@ export default function TemplatesPage() {
   }
 
   return (
-    <div className="container catalog-page">
-      <section className="catalog-intro">
-        <div>
-          <p className="eyebrow"><span aria-hidden="true" /> 模板库 / TEMPLATE LIBRARY</p>
-          <h1>挑一个模板<span>。</span></h1>
-          <p className="intro-copy">从明信片到杂志封面，用你的照片开启一次新制作。</p>
-        </div>
-        <div className="intro-aside" aria-hidden="true"><span>01</span><small>选择模板<br/>开始制作</small></div>
-      </section>
-      <section aria-labelledby="catalog-heading">
-        <div className="catalog-controls">
-          <h2 id="catalog-heading">浏览模板</h2>
-          <div className="filters" role="group" aria-label="模板分类">
-            <button aria-pressed={selection.category === ""} onClick={() => load("")}>全部</button>
+    <Box className="catalog-page">
+      <Typography component="h1" id="catalog-heading" className="sr-only">模板库</Typography>
+      <Stack direction="row" spacing={1} className="catalog-modules">
+        <Chip label="图片模板" sx={{ bgcolor: "#29292f" }} />
+        <Chip label="制作记录" component={Link} href="/history" clickable />
+      </Stack>
+      <Box component="section" aria-labelledby="catalog-heading">
+        <Stack direction="row" className="catalog-controls">
+          <Stack direction="row" spacing={0.25} className="filters" role="group" aria-label="模板分类">
+            <Button aria-pressed={selection.category === ""} onClick={() => load("")}>全部</Button>
             {catalog?.categories.map((category) => (
-              <button key={category} aria-pressed={selection.category === category}
-                onClick={() => load(category)}>{category}</button>
+              <Button key={category} aria-pressed={selection.category === category}
+                onClick={() => load(category)}>{category}</Button>
             ))}
-          </div>
-          <span className="catalog-count">
+          </Stack>
+          <Typography variant="caption" className="catalog-count">
             {loading ? "正在加载" : problem ? "加载失败" : (catalog?.templates.length ?? 0) + " 款模板"}
-          </span>
-        </div>
+          </Typography>
+        </Stack>
         {loading ? (
-          <div className="template-grid" aria-busy="true" aria-label="正在加载模板">
-            {Array.from({ length: 6 }, (_, index) => <div key={index} className="cover-skeleton" />)}
-          </div>
+          <Box className="template-grid" aria-busy="true" aria-label="正在加载模板">
+            {Array.from({ length: 6 }, (_, index) => <Skeleton variant="rounded" key={index} className="cover-skeleton" />)}
+          </Box>
         ) : problem ? (
-          <div className="empty-box" role="alert"><h2>模板暂时无法加载</h2><p>{problem}</p>
-            <button className="secondary-button" onClick={() => load(selection.category)}>重新加载</button></div>
+          <Alert severity="error" action={<Button color="inherit" onClick={() => load(selection.category)}>重新加载</Button>}>
+            <Typography component="h2" sx={{ fontWeight: 600 }}>模板暂时无法加载</Typography>{problem}
+          </Alert>
         ) : !catalog?.templates.length ? (
-          <div className="empty-box"><h2>这个分类暂时没有模板</h2>
-            <button className="secondary-button" onClick={() => load("")}>查看全部模板</button></div>
+          <Stack className="empty-box" spacing={1} sx={{ alignItems: "center" }}>
+            <Typography component="h2">这个分类暂时没有模板</Typography>
+            <Button onClick={() => load("")}>查看全部模板</Button>
+          </Stack>
         ) : (
-          <div className="template-grid">
+          <Box className="template-grid">
             {catalog.templates.map((template) => (
-              <article className="template-card" key={template.id}>
+              <Card component="article" elevation={0} className="template-card" key={template.id}>
                 <TemplateCover key={template.coverUrl} className="catalog-cover"
                   url={template.coverUrl} title={template.title} decorative />
-                <Link href={"/templates/" + template.id} className="template-card-link">
-                  <span className="template-badge">{template.category}</span>
-                  <span className="template-caption">
-                    <span><strong>{template.title}</strong><small>需要 {template.requiredImageCount} 张图片</small></span>
-                    <span className="card-arrow" aria-hidden="true">↗</span>
-                  </span>
-                </Link>
-              </article>
+                <CardActionArea component={Link} href={"/templates/" + template.id} className="template-card-link">
+                  <Stack className="template-caption">
+                    <Typography component="strong">{template.title}</Typography>
+                    <Typography variant="caption">需要 {template.requiredImageCount} 张图片</Typography>
+                  </Stack>
+                </CardActionArea>
+              </Card>
             ))}
-          </div>
+          </Box>
         )}
-      </section>
-      <footer className="catalog-footer"><span>MAT.STUDIO / MATERIAL WORKSHOP</span><span>本地模拟制作</span></footer>
-    </div>
+      </Box>
+    </Box>
   );
 }

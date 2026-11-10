@@ -2,6 +2,8 @@
 
 /* eslint-disable @next/next/no-img-element -- Uploaded previews use browser-created object URLs. */
 import Link from "next/link";
+import { ChevronLeft, UploadFileOutlined } from "@mui/icons-material";
+import { Alert, Box, Button, CircularProgress, IconButton, Paper, Stack, Typography } from "@mui/material";
 import { useCallback, useEffect, useRef, useState, type FormEvent } from "react";
 import { ApiError, api, errorMessage, jsonBody, type Asset, type Task, type Template } from "../lib/api";
 import { loadImagePreview } from "../lib/image-preview";
@@ -44,7 +46,7 @@ function UploadSlot({ index, slot, template, choose, remove, changePreview }: {
   }, [asset, attempt, changePreview, index, username]);
 
   return (
-    <div className={"upload-slot" + (uploaded ? " uploaded" : "")}>
+    <Box className={"upload-slot" + (uploaded ? " uploaded" : "")}>
       <input className="sr-only" type="file" accept={imageAccept(template.acceptedMimeTypes)}
         aria-label={"选择第 " + (index + 1) + " 张图片"} tabIndex={-1} ref={input}
         onChange={(event) => {
@@ -58,31 +60,34 @@ function UploadSlot({ index, slot, template, choose, remove, changePreview }: {
           onLoad={() => changePreview(index, asset, attempt, "ready")}
           onError={() => changePreview(index, asset, attempt, "failed")} />
       )}
-      <div className="slot-copy">
-        <span className="slot-number">素材 {String(index + 1).padStart(2, "0")}</span>
-        {!slot && <span className="slot-mark" aria-hidden="true">＋</span>}
-        {slot?.state === "uploading" && <span className="slot-status" role="status">正在上传…</span>}
-        {slot && <span className="file-name" title={slot.file.name}>{slot.file.name}</span>}
-        {slot?.state === "error" && <p className="task-error" role="alert">{slot.message}</p>}
-        {uploaded?.preview === "loading" && <span className="slot-status" role="status">正在加载素材预览…</span>}
-        {uploaded?.preview === "failed" && <p className="task-error" role="alert">素材预览暂时无法加载。</p>}
-        <div className="slot-actions">
-          <button ref={chooseButton} type="button" className={slot ? "text-button" : "upload-trigger"}
+      <Box className="slot-copy">
+        {slot && <Typography variant="caption" color="text.secondary">素材 {String(index + 1).padStart(2, "0")}</Typography>}
+        {slot?.state === "uploading" && <Typography variant="caption" role="status">正在上传…</Typography>}
+        {slot && <Typography variant="body2" className="file-name" title={slot.file.name}>{slot.file.name}</Typography>}
+        {slot?.state === "error" && <Typography variant="body2" color="error" role="alert">{slot.message}</Typography>}
+        {uploaded?.preview === "loading" && <Typography variant="caption" role="status">正在加载素材预览…</Typography>}
+        {uploaded?.preview === "failed" && <Typography variant="body2" color="error" role="alert">素材预览暂时无法加载。</Typography>}
+        <Stack direction="row" spacing={0.5} useFlexGap className="slot-actions">
+          <Button ref={chooseButton} type="button" size="small" color={slot ? "primary" : "inherit"}
+            className={slot ? undefined : "upload-trigger"}
             aria-label={slot ? "替换素材 " + (index + 1) : "选择素材 " + (index + 1)}
             data-focus-after-login={index === 0 ? "" : undefined}
-            onClick={() => input.current?.click()}>{slot ? "替换" : "选择图片"}</button>
-          {slot?.state === "error" && <button type="button" className="text-button"
-            onClick={() => { chooseButton.current?.focus(); choose(slot.file); }}>重试上传</button>}
-          {uploaded?.preview === "failed" && <button type="button" className="text-button"
+            onClick={() => input.current?.click()}>
+            {!slot && <Box className="upload-icon"><UploadFileOutlined fontSize="small" /></Box>}
+            {slot ? "替换" : "选择图片"}
+          </Button>
+          {slot?.state === "error" && <Button type="button" size="small"
+            onClick={() => { chooseButton.current?.focus(); choose(slot.file); }}>重试上传</Button>}
+          {uploaded?.preview === "failed" && <Button type="button" size="small"
             onClick={() => {
               chooseButton.current?.focus();
               changePreview(index, uploaded.asset, attempt, "loading");
-            }}>重试预览</button>}
-          {slot && <button type="button" className="text-button" aria-label={"移除素材 " + (index + 1)}
-            onClick={() => { chooseButton.current?.focus(); remove(); }}>移除</button>}
-        </div>
-      </div>
-    </div>
+            }}>重试预览</Button>}
+          {slot && <Button type="button" size="small" aria-label={"移除素材 " + (index + 1)}
+            onClick={() => { chooseButton.current?.focus(); remove(); }}>移除</Button>}
+        </Stack>
+      </Box>
+    </Box>
   );
 }
 
@@ -207,37 +212,41 @@ function CreationForm({ template, accept }: { template: Template; accept: (task:
   }
 
   return (
-    <form className="create-form" onSubmit={(event) => void submit(event)}>
-      <fieldset disabled={submitting} aria-describedby="template-image-requirements">
-        <legend>上传素材</legend>
-        <div className="upload-list">
+    <Stack component="form" className="create-form" onSubmit={(event) => void submit(event)}>
+      <Box component="fieldset" disabled={submitting} aria-describedby="template-image-requirements">
+        <Typography component="legend" sx={{ fontWeight: 600 }}>上传素材</Typography>
+        <Stack spacing={1} className={"upload-list" + (slots.length === 1 ? " single-slot" : "")}>
           {slots.map((slot, index) => (
             <UploadSlot key={index} index={index} template={template} slot={slot}
               choose={(file) => void upload(index, file)} remove={() => remove(index)}
               changePreview={changePreview} />
           ))}
-        </div>
-      </fieldset>
-      <button className="primary-button" disabled={!ready || submitting} type="submit">
-        {submitting ? "正在提交…" : "提交制作"} <span aria-hidden="true">↗</span>
-      </button>
-      {feedback && <p className={feedback.error ? "task-error" : "submit-feedback"}
-        role={feedback.error ? "alert" : "status"}>{feedback.message}</p>}
-    </form>
+        </Stack>
+      </Box>
+      <Box className="submit-area">
+        <Button fullWidth variant="contained" disabled={!ready || submitting} type="submit">
+          {submitting ? "正在提交…" : "提交制作"}
+        </Button>
+        {feedback && <Typography variant="caption" color={feedback.error ? "error" : "primary"}
+          role={feedback.error ? "alert" : "status"}>{feedback.message}</Typography>}
+      </Box>
+    </Stack>
   );
 }
 
 function Cover({ template }: { template: Template }) {
   return (
     <>
-      <p className="eyebrow">{template.category} / TEMPLATE</p>
-      <h1>{template.title}<span>。</span></h1>
+      <Stack direction="row" spacing={0.5} className="workspace-title" sx={{ alignItems: "center" }}>
+        <IconButton component={Link} href="/templates" aria-label="返回模板库"><ChevronLeft /></IconButton>
+        <Typography component="h1" variant="subtitle1" sx={{ fontWeight: 700 }}>{template.title}</Typography>
+      </Stack>
       <TemplateCover key={template.coverUrl} className="workspace-cover" url={template.coverUrl} title={template.title} />
-      <p className="template-description">{template.description}</p>
-      <p id="template-image-requirements" className="input-help">
+      <Typography variant="body2" color="text.secondary" sx={{ mt: 1 }}>{template.description}</Typography>
+      <Typography variant="caption" id="template-image-requirements" className="input-help" color="text.secondary">
         素材要求 · {template.requiredImageCount} 张图片 · {imageFormatNames(template.acceptedMimeTypes).join(" / ")}
         {" · 单张 ≤ "}{template.maxFileSizeBytes / 1024 ** 2} MB · 单张 ≤ {template.maxImagePixels / 10_000} 万像素
-      </p>
+      </Typography>
     </>
   );
 }
@@ -245,18 +254,18 @@ function Cover({ template }: { template: Template }) {
 function LoggedInWorkspace({ template }: { template: Template }) {
   const history = useHistory(template.id);
   return (
-    <div className="workspace-grid">
-      <section className="panel editor-panel">
+    <Box className="workspace-grid">
+      <Paper component="section" variant="outlined" className="panel editor-panel">
         <Cover template={template} />
         <CreationForm template={template} accept={history.accept} />
-      </section>
+      </Paper>
       <HistoryPanel history={history} />
-    </div>
+    </Box>
   );
 }
 
 export function TemplateWorkspace({ id }: { id: string }) {
-  const { user, busy } = useSession();
+  const { user } = useSession();
   const [template, setTemplate] = useState<Template | null>(null);
   const [error, setError] = useState<{ missing: boolean; message: string } | null>(null);
   const [attempt, setAttempt] = useState(0);
@@ -274,25 +283,28 @@ export function TemplateWorkspace({ id }: { id: string }) {
   }, [id, attempt]);
 
   return (
-    <div className="container workspace-page">
-      <Link href="/templates" className="back-link">← 返回模板库</Link>
+    <Box className="workspace-page">
       {error ? (
-        <div className="empty-box" role="alert">
-          <h1>{error.missing ? "找不到这个模板" : "模板暂时无法加载"}</h1>
-          <p>{error.message}</p>
-          {!error.missing && <button className="secondary-button"
-            onClick={() => { setError(null); setAttempt((key) => key + 1); }}>重新加载</button>}
-        </div>
+        <Alert severity="error" action={<Stack direction="row">
+          <Button component={Link} href="/templates" color="inherit">返回模板库</Button>
+          {!error.missing && <Button color="inherit"
+            onClick={() => { setError(null); setAttempt((key) => key + 1); }}>重新加载</Button>}
+        </Stack>}>
+          <Typography component="h1" sx={{ fontWeight: 700 }}>{error.missing ? "找不到这个模板" : "模板暂时无法加载"}</Typography>
+          {error.message}
+        </Alert>
       ) : !template ? (
-        <div className="empty-box" role="status">正在加载模板详情…</div>
-      ) : !busy && user ? (
+        <Stack role="status" className="empty-box" direction="row" spacing={1} sx={{ justifyContent: "center" }}>
+          <CircularProgress size={16} /><Typography>正在加载模板详情…</Typography>
+        </Stack>
+      ) : user ? (
         <LoggedInWorkspace key={user.username} template={template} />
       ) : (
-        <div className="workspace-grid">
-          <section className="panel editor-panel"><Cover template={template} /></section>
+        <Box className="workspace-grid">
+          <Paper component="section" variant="outlined" className="panel editor-panel"><Cover template={template} /></Paper>
           <AccountPrompt />
-        </div>
+        </Box>
       )}
-    </div>
+    </Box>
   );
 }

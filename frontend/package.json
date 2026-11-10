@@ -2,7 +2,9 @@
   "name": "material-studio-web",
   "version": "1.0.0",
   "private": true,
-  "engines": { "node": "^22.13.0 || ^24.0.0 || >=26.0.0" },
+  "engines": {
+    "node": "^22.13.0 || ^24.0.0 || >=26.0.0"
+  },
   "scripts": {
     "dev": "next dev",
     "build": "next build",
@@ -12,6 +14,12 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@emotion/cache": "11.14.0",
+    "@emotion/react": "11.14.0",
+    "@emotion/styled": "11.14.1",
+    "@mui/icons-material": "9.5.0",
+    "@mui/material": "9.5.0",
+    "@mui/material-nextjs": "9.5.0",
     "next": "16.4.6",
     "react": "19.2.9",
     "react-dom": "19.2.9"

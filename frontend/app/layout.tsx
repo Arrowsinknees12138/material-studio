@@ -1,6 +1,8 @@
 import type { Metadata } from "next";
 import type { ReactNode } from "react";
+import { AppRouterCacheProvider } from "@mui/material-nextjs/v15-appRouter";
 import { StudioShell } from "../components/studio-shell";
+import { StudioTheme } from "../components/studio-theme";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -11,7 +13,11 @@ export const metadata: Metadata = {
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="zh-CN">
-      <body><StudioShell>{children}</StudioShell></body>
+      <body>
+        <AppRouterCacheProvider>
+          <StudioTheme><StudioShell>{children}</StudioShell></StudioTheme>
+        </AppRouterCacheProvider>
+      </body>
     </html>
   );
 }

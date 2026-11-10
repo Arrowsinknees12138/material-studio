@@ -27,7 +27,8 @@ docker compose ps
 2. 在制作页选择「使用林夏」。从 `backend/src/main/resources/static/demo/` 选择任意两张封面 JPEG，上传到「海岸明信片」。也可用自己的 JPEG 或 PNG。
 3. 点「提交制作」。任务卡片出现后立即再点一次，可以看到两条独立任务。两条任务分别从「等待处理」进入各自的制作阶段。
 4. 处理中刷新网页或切到模板库再回来。历史从 Java 重新加载，未完成任务继续更新。制作成功后点击卡片封面预览结果。顶栏「我的制作」汇总所有模板的个人记录。
-5. 用右上角菜单切换到「周野」，验证看不到林夏的记录。切回林夏后可以继续查看原记录。两个演示账号用户名是 `lin` 和 `zhou`，演示密码均为 `studio-demo`。
+5. 打开右上角「账户设置」，选择「切换账号」并切换到「周野」，验证看不到林夏的记录。切回林夏后可以继续查看原记录。两个演示账号用户名是 `lin` 和 `zhou`，演示密码均为 `studio-demo`。
+6. 退出演示账号，点右上角「登录 / 注册」，选择「注册账号」。填写自选用户名、显示名称和密码，注册成功即登录。提交一条任务并打开「我的制作」，然后退出并重新用该用户名和密码登录，确认历史仍可访问。切换到其他账号时，个人历史里不会出现该任务。
 
 ### 模拟指定阶段失败
 
@@ -62,7 +63,7 @@ curl -fsS -b "$COOKIE" "$BASE/api/tasks?templateId=desert"
 
 | 层 | 版本 |
 | --- | --- |
-| Web | Next.js 16.4.6 App Router、React 19.2.9、TypeScript 5.9.3、Node.js 22.13+、ESLint 9 |
+| Web | Next.js 16.4.6 App Router、React 19.2.9、Material UI 9.5.0、TypeScript 5.9.3、Node.js 22.13+、ESLint 9 |
 | Java | Java 21、Spring Boot 3.5.16、MyBatis Spring Boot Starter 3.0.5、Maven 3.9.11 |
 | 数据 | MySQL 8.4、Flyway 和 Spring Session JDBC（Spring Boot 依赖管理） |
 
@@ -127,6 +128,7 @@ cd backend
 | `GET /api/templates/{id}` | 模板 ID | `{id,title,category,description,coverUrl,requiredImageCount,acceptedMimeTypes,maxFileSizeBytes,maxImagePixels}` |
 | `GET /api/session` | Cookie 可省略 | `{user: {username,displayName} \| null}` |
 | `POST /api/session` | `{username,password}` | `{user}`，同时设置会话 Cookie |
+| `POST /api/session/register` | `{username,displayName,password}` | `201 {user}`，同时设置会话 Cookie。格式无效返回 `400`，用户名已存在返回 `409` |
 | `POST /api/session/logout` | Cookie | `204` |
 | `POST /api/assets` | Multipart `templateId`、`file` | `201 {assetId,previewUrl,contentType,byteSize}` |
 | `GET /api/assets/{id}/content` | 素材 ID | 图片 |
@@ -139,7 +141,17 @@ cd backend
 
 任务对象字段为 `id`、`templateId`、`templateTitle`、`status`、`stage`、`createdAt`、`completedAt`、`resultUrl`、`errorMessage`。时间以 UTC ISO 8601 返回。提交的 `requestId` 为 UUID，同一用户重复提交同一个 `requestId` 时返回原任务。成功受理一条任务后，下一次制作应使用新的 `requestId`。
 
-Java 使用 BCrypt 校验演示账号，身份保存在由 Spring Session JDBC 管理的 MySQL 会话。Cookie 设置 `HttpOnly` 和 `SameSite=Lax`。Java 使用会话用户过滤任务、素材和结果。网页跨标签页切换账号时重新读取会话，并为任务和上传请求附上页面显示的账号，以便 Java 拒绝旧页面发出的请求。素材失效时，提交接口通过 `unavailableAssetIds` 标明需要重传的槽位。跨账号读取资源返回 `404`，登录失效时私有接口返回 `401`。浏览器按文件头识别 JPEG 或 PNG，即使系统没有提供 MIME 也可上传。Java 按模板校验大小并解码校验内容。模拟器读取已保存的文件，上传预览同样来自服务端。
+### 账号与个人记录
+
+用户自行注册用户名、显示名称和密码。用户名使用 3 至 40 位英文字母、数字、下划线或连字符，以英文字母或数字开头。Java 去除首尾空白并统一转为小写，再由 MySQL 唯一索引约束。显示名称为 1 至 80 个字符。密码至少 8 个字符，UTF-8 编码最多 72 字节，MySQL 的 `users` 表仅保存 BCrypt 哈希。
+
+注册、登录或切换账号成功时，Java 轮换会话 ID。Spring Session JDBC 在 MySQL 保存会话，浏览器使用 `HttpOnly` 和 `SameSite=Lax` 的 Cookie。上传和任务使用会话中的用户 ID 标记归属。个人历史、单条任务及图片读取均由 Java 按归属查询。退出登录会注销会话，任务和结果仍保存在该用户下。跨标签页切换账号时，页面清理旧记录并重新读取会话。私有请求附上当前页面的用户名，Java 据此拒绝切换前发出的过时请求。跨账号读取资源返回 `404`，登录失效时私有接口返回 `401`。
+
+演示账号是公开种子账号，适合验收流程。请用自建账号保存自己的制作记录。
+
+### 图片和预览
+
+素材失效时，提交接口通过 `unavailableAssetIds` 标明需要重传的槽位。浏览器按文件头识别 JPEG 或 PNG，即使系统没有提供 MIME 也可上传。Java 按模板校验大小并解码校验内容。模拟器读取已保存的文件，上传预览同样来自服务端。
 
 登录前即可在模板详情查看所需图片张数、支持格式、单张大小和像素上限。详情页、文件选择器和前后端格式错误提示都使用当前模板的配置。模板接口的单张大小取模板配置与 Java multipart 单文件上限的较小值。默认单文件上限为 5 MB，multipart 请求总上限为 6 MB，给表单字段留出空间。封面加载失败时可在列表卡片或详情页单独重试。通过制作页登录入口成功登录后，键盘焦点移到第一个上传按钮。
 
@@ -174,11 +186,12 @@ docker compose ps api
 
 ## 交付状态、边界和回滚
 
-- 已实现模板筛选、上传校验、模拟任务、失败注入、并行跟踪、刷新恢复、结果预览、身份隔离和容器配置。
+- 已实现 MUI 模板库及制作工作台、模板筛选、上传校验、模拟任务、失败注入、并行跟踪、刷新恢复、结果预览、个人账号注册和历史隔离、容器配置。
 - 首版从创建空仓库到实现与本地验收约 20 分钟，含依赖下载和容器构建。早期迭代涉及任务断点续作、跨实例和跨标签页会话、素材清理、历史分页和回归测试，未单独计时。
 - 补齐素材预览反馈和浏览器回归约 4 分钟。修复素材预览超时与模拟参数校验约 4 分钟。修复结果预览超时与会话失效约 5 分钟。补齐访客素材要求与格式提示约 4 分钟。均按复核、修改、容器验证及源码整理的经过时间估算，包含容器等待。
 - 集中完善素材预览会话、封面重试、分类计数、参数错误、有效上传上限和登录焦点，约 6 分半钟，包含容器回归及源码整理。
 - 本轮核对 Git 交付并修复手动查询重试与历史分页边界，约 6 分钟，包含旧版复现、容器回归和提交整理。
+- MUI 布局重构与个人账号注册约 16 分钟，包含对照截图、依赖安装、Java 会话接入、桌面及小屏复核和容器回归。保留已有模板素材及任务模型，使用用户名密码和现有 MySQL 表完成身份与历史归属。
 - 预览重试复用原素材 ID。加载期间或失败时暂缓提交，用户仍可替换或移除图片。跨账号和提交回执丢失的回归放在现有 Chromium 烟测中，直接验证浏览器、Java 和 MySQL 之间的行为。
 - 当前版本使用预置图片演示结果。阶段内发生中断时，以整阶段为单位重做。任务历史及其关联素材按原记录保留，自动清理范围是数据库中已登记且过期的未引用上传。旧版本发生进程中断时可能留下未登记文件，这些文件不在自动清理范围内。
 - 部署使用验收 commit 构建镜像，保留数据库卷和图片卷，先检查数据库和 Java 健康状态，再走一次上传、提交和预览。从旧版升级时，先停止所有旧版 Java 实例，再备份两类卷并构建新版本。Flyway 自动执行尚未应用的迁移，当前到 V5，其中 V3 保存任务检查点并支持素材清理，V4 新增共享会话表，V5 新增历史查询索引。旧版内存会话需要重新登录，原任务和素材记录继续使用。若旧版与升级后的库不兼容，停服务后恢复升级前同一时间点的数据库卷和图片卷，再以旧 commit 构建并启动服务，检查原历史与结果。
@@ -189,7 +202,7 @@ docker compose ps api
 - 容器内完成前端 ESLint、TypeScript 类型检查、任务跟踪测试和生产构建，以及 Java 单元测试和打包。
 - Compose 从新数据卷启动后，验证了分类接口、上传校验、异步受理、幂等提交、三个阶段的先后顺序、各阶段失败、结果文件读取和跨账号隔离。
 - 双 Java 实例容器验证了跨实例会话和文件读取。强制终止两个实例后，任务从已保存的结果整理阶段继续完成。旧版 V2 数据升到 V4 后，原历史与结果仍可读取，旧版处理中任务继续执行。另验证了素材过期清理与任务提交竞争时的数据一致性。
-- 浏览器实际操作验证了模板筛选、上传、提交、刷新恢复、结果预览和账号切换。没有做公网部署。
+- 浏览器实际操作验证了模板筛选、上传、提交、刷新恢复、结果预览、个人注册和账号切换。另用桌面 1280px 和小屏 320px 复核 MUI 布局。没有做公网部署。
 
 ### Compose 回归
 
@@ -199,10 +212,12 @@ docker compose ps api
 bash tests/smoke/run.sh
 ```
 
-GitHub Actions 的 `compose-smoke` 任务也运行这套检查。脚本使用独立 Compose 项目和临时数据卷，测试结束后清理这些资源。Chromium 在 320px 视口验证访客素材要求、有效上传上限、PNG 格式校验、登录后的键盘焦点、上传竞争、两种私有预览的超时和会话失效、账号切换和失效素材槽位。在桌面视口验证分类失败反馈、列表和详情的封面重试、受理响应丢失后的幂等提交、查询恢复、刷新续跟、关页续作和首屏替换后的历史分页。服务端烟测验证实际上传限制、缺失文件和错误参数的响应、并发幂等、三阶段定点失败、历史分页、账号隔离、Java 和 MySQL 恢复及素材清理。
+GitHub Actions 的 `compose-smoke` 任务也运行这套检查。脚本使用独立 Compose 项目和临时数据卷，测试结束后清理这些资源。Chromium 在 320px 视口验证访客素材要求、有效上传上限、PNG 格式校验、登录后的键盘焦点、上传竞争、两种私有预览的超时和会话失效、账号切换和失效素材槽位。在桌面视口验证六列目录、双栏工作台、个人注册、账户设置、分类失败反馈、封面重试、幂等提交、查询恢复、刷新续跟、关页续作和历史分页。服务端烟测验证上传限制、缺失文件和错误参数、并发幂等、三阶段定点失败、注册冲突、退出后重新登录、个人历史和结果隔离、Java 和 MySQL 恢复及素材清理。
 
 ## AI 工作流与来源
 
 使用 Codex 辅助实现。先按题目拆分为 Java 业务与持久化、页面状态、容器和验收，再把明确的职责边界和截图布局提供给 Codex。按模块生成并检查实现，最后通过容器构建、单元测试和接口烟测对照题目修正。一个例子是把查询异常单独存为 `queryError`，用两个并发请求的测试让一个任务返回失败、另一个查询断网，确认后者保留已知的运行阶段，并在查询恢复后只更新自己的卡片。
 
-视觉布局参考题目截图。JPEG 封面和结果由 Python 与 Pillow 程序化绘制，随项目离线交付，未使用截图内的品牌和素材。工程采用 Next.js、Spring Boot、MyBatis 等开源依赖，未复制第三方业务代码。Compose 回归使用 Playwright 安装并运行 Chromium。共享会话迁移遵循 [Spring Session JDBC 的 MySQL 表结构](https://docs.spring.io/spring-session/reference/configuration/jdbc.html)。Maven Wrapper 脚本取自 Apache Maven Wrapper 3.3.4 的 only-script 模板。
+视觉布局参考题目截图，使用 MUI 主题、组件和图标构建模板库、制作页、历史页及账户设置。App Router 的样式注入使用官方集成。 [Material UI 的 Next.js 集成](https://mui.com/material-ui/integrations/nextjs/)
+
+JPEG 封面和结果由 Python 与 Pillow 程序化绘制，随项目离线交付。工程采用 Next.js、Spring Boot、MyBatis 等开源依赖。Compose 回归使用 Playwright 安装并运行 Chromium。Maven Wrapper 脚本取自 Apache Maven Wrapper 3.3.4 的 only-script 模板。共享会话迁移遵循官方表结构。 [Spring Session JDBC 的 MySQL 表结构](https://docs.spring.io/spring-session/reference/configuration/jdbc.html)

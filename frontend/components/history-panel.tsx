@@ -3,6 +3,8 @@
 /* eslint-disable @next/next/no-img-element -- Private images need the browser session cookie. */
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
+import { Close, History, OpenInFull, Refresh } from "@mui/icons-material";
+import { Alert, Box, Button, ButtonBase, Card, Dialog, DialogContent, DialogTitle, IconButton, Paper, Stack, Typography } from "@mui/material";
 import { ApiError, api, errorMessage, stageLabels, type Task, type TaskPage, type TaskStatus } from "../lib/api";
 import { loadImagePreview } from "../lib/image-preview";
 import { createTaskFeed, type TaskEntry } from "../lib/task-feed";
@@ -113,10 +115,10 @@ export function useHistory(templateId?: string) {
 function ResultThumbnail({ url, title, open }: { url: string; title: string; open: () => void }) {
   const [failed, setFailed] = useState(false);
   return (
-    <button className="result-thumb" onClick={open} aria-label={"预览" + title + "的结果"}>
+    <ButtonBase className="result-thumb" onClick={open} aria-label={"预览" + title + "的结果"}>
       {failed ? "打开预览" : <img src={url} alt="" onError={() => setFailed(true)} />}
-      <span aria-hidden="true">↗</span>
-    </button>
+      <OpenInFull className="expand-result" fontSize="small" />
+    </ButtonBase>
   );
 }
 
@@ -143,20 +145,20 @@ function ResultPreview({ url, title, focusClose }: { url: string; title: string;
 
   if (image.state === "failed") {
     return (
-      <div className="empty-box">
-        <p role="alert">{image.message}</p>
-        <button className="secondary-button" onClick={() => {
+      <Stack className="empty-box" spacing={1} sx={{ alignItems: "center" }}>
+        <Alert severity="error">{image.message}</Alert>
+        <Button variant="outlined" onClick={() => {
           focusClose();
           setAttempt((current) => current + 1);
           setImage({ state: "loading" });
-        }}>重新加载图片</button>
-      </div>
+        }}>重新加载图片</Button>
+      </Stack>
     );
   }
   const src = image.src;
   return (
     <>
-      {image.state === "loading" && <p className="empty-box" role="status">正在加载结果图片…</p>}
+      {image.state === "loading" && <Typography className="empty-box" role="status">正在加载结果图片…</Typography>}
       {src && <img src={src} alt={title + "制作结果"} hidden={image.state !== "ready"}
         onLoad={() => setImage({ state: "ready", src })}
         onError={() => setImage({ state: "failed", message: resultPreviewError })} />}
@@ -165,83 +167,83 @@ function ResultPreview({ url, title, focusClose }: { url: string; title: string;
 }
 
 export function HistoryPanel({ history, full = false }: { history: ReturnType<typeof useHistory>; full?: boolean }) {
-  const dialog = useRef<HTMLDialogElement>(null);
   const closePreview = useRef<HTMLButtonElement>(null);
   const [preview, setPreview] = useState<{ url: string; title: string } | null>(null);
 
-  useEffect(() => {
-    if (preview && dialog.current && !dialog.current.open) dialog.current.showModal();
-  }, [preview]);
-
   return (
-    <section className={full ? "panel history-panel full-history" : "panel history-panel"} aria-labelledby="history-heading">
-      <header className="panel-heading">
-        <div>
-          <p className="eyebrow">制作记录 / HISTORY</p>
-          <h2 id="history-heading">{full ? "全部记录" : "当前模板记录"}</h2>
-        </div>
-        <button className="icon-button" aria-label="刷新历史记录" title="刷新历史记录"
-          onClick={history.refresh} disabled={history.loading}>↻</button>
-      </header>
-      {history.error && <div className="notice" role="alert">
-        {history.error} <button className="text-button" onClick={history.retryPage}>重新加载</button>
-      </div>}
-      {history.trackingError && <div className="notice" role="alert">
-        暂时无法恢复进行中的任务 · {history.trackingError}{" "}
-        <button className="text-button" onClick={history.refreshTracking}>重试跟踪</button>
-      </div>}
-      {history.loading && <p className="history-loading" role="status">正在读取制作记录…</p>}
+    <Paper component="section" variant="outlined" className="panel history-panel" aria-labelledby="history-heading">
+      <Stack component="header" className="panel-heading" direction="row"
+        sx={{ alignItems: "center", justifyContent: "space-between" }}>
+        <Typography component="h2" variant="subtitle1" id="history-heading">
+          {full ? "全部记录" : "当前模板记录"}
+        </Typography>
+        <IconButton aria-label="刷新历史记录" title="刷新历史记录" size="small"
+          onClick={history.refresh} disabled={history.loading}><Refresh fontSize="small" /></IconButton>
+      </Stack>
+      {history.error && <Alert severity="warning"
+        action={<Button size="small" onClick={history.retryPage}>重新加载</Button>}>{history.error}</Alert>}
+      {history.trackingError && <Alert severity="warning"
+        action={<Button size="small" onClick={history.refreshTracking}>重试跟踪</Button>}>
+        暂时无法恢复进行中的任务 · {history.trackingError}
+      </Alert>}
+      {history.loading && <Typography className="empty-box" role="status">正在读取制作记录…</Typography>}
       {!history.loading && !history.error && history.entries.length === 0 && (
-        <div className="empty-box">
-          <span className="empty-mark" aria-hidden="true">◫</span>
-          <h3>还没有制作记录</h3>
-          <p>提交后的任务和结果会显示在这里。</p>
-          {full && <Link className="secondary-button" href="/templates">去挑模板</Link>}
-        </div>
+        <Stack className="empty-box" spacing={1} sx={{ alignItems: "center" }}>
+          <History fontSize="large" color="action" />
+          <Typography component="h3" variant="subtitle1">还没有制作记录</Typography>
+          <Typography variant="body2" color="text.secondary">提交后的任务和结果会显示在这里。</Typography>
+          {full && <Button component={Link} href="/templates" variant="outlined">去挑模板</Button>}
+        </Stack>
       )}
       {history.entries.length > 0 && (
-        <div className="task-grid">
+        <Box className="task-grid">
           {history.entries.map(({ task, queryError }) => {
             const url = task.resultUrl;
             return (
-              <article className="task-card" key={task.id}>
+              <Card component="article" variant="outlined" className="task-card" key={task.id}>
                 {url ? (
                   <ResultThumbnail url={url} title={task.templateTitle}
                     open={() => setPreview({ url, title: task.templateTitle })} />
                 ) : (
-                  <div className={"task-placeholder " + task.status.toLowerCase()} aria-hidden="true">
-                    <span>{task.status === "FAILED" ? "!" : task.status === "RUNNING" ? "✳" : "◷"}</span>
-                  </div>
+                  <Stack className="task-stage" spacing={0.75} sx={{ alignItems: "center", justifyContent: "center" }}>
+                    <Typography variant="body2">{labels[task.status]}</Typography>
+                    {task.stage && <Typography variant="caption" color="text.secondary">{stageLabels[task.stage]}</Typography>}
+                    {task.errorMessage && <Typography variant="caption" color="error.light">{task.errorMessage}</Typography>}
+                  </Stack>
                 )}
-                <div className="task-copy">
-                  <span className={"status-pill " + task.status.toLowerCase()}>{labels[task.status]}</span>
-                  <h3>{task.templateTitle}</h3>
-                  <time dateTime={task.createdAt}>{dateFormat.format(new Date(task.createdAt))}</time>
-                  {task.stage && task.status !== "SUCCEEDED" && <p>{stageLabels[task.stage]}</p>}
-                  {task.errorMessage && <p className="task-error">{task.errorMessage}</p>}
-                  {queryError && <div className="query-error" role="status">
-                    <p>暂时无法更新 · {queryError}</p>
-                    <button className="text-button" onClick={() => history.retry(task.id)}>重新查询</button>
-                  </div>}
-                </div>
-              </article>
+                <Stack className="task-copy" spacing={0.5}>
+                  {url && <Typography variant="caption" color="success.light">{labels[task.status]}</Typography>}
+                  <Typography component="h3" variant="body2">{task.templateTitle}</Typography>
+                  <Typography component="time" variant="caption" dateTime={task.createdAt} color="text.secondary">
+                    {dateFormat.format(new Date(task.createdAt))}
+                  </Typography>
+                  {queryError && <Stack sx={{ alignItems: "flex-start" }} role="status">
+                    <Typography variant="caption" color="warning.light">暂时无法更新 · {queryError}</Typography>
+                    <Button size="small" onClick={() => history.retry(task.id)}>重新查询</Button>
+                  </Stack>}
+                </Stack>
+              </Card>
             );
           })}
-        </div>
+        </Box>
       )}
-      {history.nextCursor && <div className="button-row">
-        <button className="secondary-button" onClick={history.loadMore} disabled={history.loading}>加载更多记录</button>
-      </div>}
-      <dialog className="preview-dialog" ref={dialog} aria-labelledby="preview-title" onClose={() => setPreview(null)}>
+      {history.nextCursor && <Box sx={{ mt: 2 }}>
+        <Button variant="outlined" onClick={history.loadMore} disabled={history.loading}>加载更多记录</Button>
+      </Box>}
+      <Dialog open={Boolean(preview)} onClose={() => setPreview(null)} fullWidth maxWidth="md"
+        aria-labelledby="preview-title" slotProps={{ paper: { className: "preview-dialog" } }}>
         {preview && (
           <>
-            <header><h2 id="preview-title">{preview.title}</h2>
-              <button ref={closePreview} className="icon-button" aria-label="关闭结果预览"
-                onClick={() => dialog.current?.close()}>×</button></header>
-            <ResultPreview url={preview.url} title={preview.title} focusClose={() => closePreview.current?.focus()} />
+            <DialogTitle id="preview-title" className="dialog-heading">
+              {preview.title}
+              <IconButton ref={closePreview} aria-label="关闭结果预览" onClick={() => setPreview(null)}><Close /></IconButton>
+            </DialogTitle>
+            <DialogContent>
+              <ResultPreview url={preview.url} title={preview.title} focusClose={() => closePreview.current?.focus()} />
+            </DialogContent>
           </>
         )}
-      </dialog>
-    </section>
+      </Dialog>
+    </Paper>
   );
 }

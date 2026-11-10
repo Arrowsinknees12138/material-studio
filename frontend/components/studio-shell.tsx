@@ -2,17 +2,20 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { createContext, type ReactNode, useContext, useEffect, useRef, useState } from "react";
+import { AccountCircleOutlined, AutoAwesome, ChevronRight, Close, History, Logout, SwitchAccountOutlined } from "@mui/icons-material";
+import { Alert, AppBar, Avatar, Box, Button, Dialog, DialogContent, DialogTitle, Divider, IconButton, Paper, Stack, Tab, Tabs, TextField, Toolbar, Typography } from "@mui/material";
+import { createContext, type FormEvent, type ReactNode, useContext, useEffect, useId, useRef, useState } from "react";
 import { api, errorMessage, jsonBody, sessionCheckEvent, type User } from "../lib/api";
 
 const sessionChangeKey = "studio:session-changed";
 const demos = [{ username: "lin", displayName: "林夏" }, { username: "zhou", displayName: "周野" }];
+type Credentials = { username: string; password: string; displayName?: string };
 
 interface Session {
   user: User | null;
   busy: boolean;
   error: string | null;
-  login: (username: string) => void;
+  authenticate: (credentials: Credentials) => void;
   refresh: () => void;
 }
 
@@ -29,10 +32,12 @@ export function StudioShell({ children }: { children: ReactNode }) {
   const [busy, setBusy] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
+  const [accountOpen, setAccountOpen] = useState(false);
+  const [showAccess, setShowAccess] = useState(false);
+  const accessId = useId();
   const action = useRef<AbortController | null>(null);
   const checking = useRef<AbortController | null>(null);
   const checkAfterAction = useRef(false);
-  const menu = useRef<HTMLDetailsElement>(null);
   const main = useRef<HTMLElement>(null);
   const focusAfterLogin = useRef(false);
   const pathname = usePathname();
@@ -94,25 +99,30 @@ export function StudioShell({ children }: { children: ReactNode }) {
     setRefreshKey((key) => key + 1);
   }
 
-  async function changeSession(username?: string, focusWorkspace = false) {
+  function closeAccount() {
+    setAccountOpen(false);
+    setError(null);
+  }
+
+  async function changeSession(credentials?: Credentials, focusWorkspace = false) {
     if (busy || action.current) return;
     focusAfterLogin.current = focusWorkspace;
-    if (menu.current) menu.current.open = false;
     const controller = new AbortController();
     checking.current?.abort();
     action.current = controller;
     setBusy(true);
     setError(null);
     try {
-      if (username) {
-        const response = await api<{ user: User }>("/session",
-          jsonBody({ username, password: "studio-demo" }, controller.signal));
+      if (credentials) {
+        const path = credentials.displayName === undefined ? "/session" : "/session/register";
+        const response = await api<{ user: User }>(path, jsonBody(credentials, controller.signal));
         if (!controller.signal.aborted) setUser(response.user);
       } else {
         await api("/session/logout", { method: "POST", signal: controller.signal });
         if (!controller.signal.aborted) setUser(null);
       }
       if (!controller.signal.aborted) {
+        setAccountOpen(false);
         try {
           localStorage.setItem(sessionChangeKey, crypto.getRandomValues(new Uint32Array(2)).join("-"));
         } catch {
@@ -134,57 +144,148 @@ export function StudioShell({ children }: { children: ReactNode }) {
   }
 
   return (
-    <SessionContext.Provider value={{ user, busy, error, login: (id) => void changeSession(id, true), refresh }}>
+    <SessionContext.Provider value={{ user, busy, error,
+      authenticate: (credentials) => void changeSession(credentials, true), refresh }}>
       <a href="#main" className="skip-link">跳转到主要内容</a>
-      <header className="site-header">
-        <div className="header-inner">
-          <Link href="/templates" className="brand">
-            <span className="brand-mark" aria-hidden="true">✳</span>
-            <span>素材工场 <small>MAT.STUDIO</small></span>
-          </Link>
-          <nav aria-label="主导航">
-            <Link href="/templates" aria-current={pathname.startsWith("/templates") ? "page" : undefined}>模板库</Link>
-            <Link href="/history" aria-current={pathname === "/history" ? "page" : undefined}>我的制作</Link>
-          </nav>
-          <details className="account-menu" ref={menu}>
-            <summary aria-label="当前账号与切换">
-              <span className="avatar" aria-hidden="true">{user?.displayName[0] ?? "人"}</span>
-              <span className="account-name">{busy ? "连接中" : user?.displayName ?? "演示账号"}</span>
-              <span aria-hidden="true" className="chevron">⌄</span>
-            </summary>
-            <div className="account-popover">
-              <p>演示账号</p>
-              {demos.filter((demo) => demo.username !== user?.username).map((demo) => (
-                <button key={demo.username} disabled={busy} onClick={() => void changeSession(demo.username)}>
-                  {user ? "切换到" : "以此账号进入"} {demo.displayName}
-                </button>
-              ))}
-              {user && <button disabled={busy} onClick={() => void changeSession()}>退出登录</button>}
-            </div>
-          </details>
-        </div>
-      </header>
-      {error && <div className="shell-error notice" role="alert">
-        {error} <button className="text-button" onClick={refresh}>重新检查账号</button>
-      </div>}
+      <AppBar position="static" elevation={0} color="transparent" className="site-header">
+        <Toolbar disableGutters className="header-inner">
+          <IconButton component={Link} href="/templates" aria-label="素材工场首页" className="brand-mark">
+            <AutoAwesome fontSize="small" />
+          </IconButton>
+          <Stack component="nav" aria-label="主导航" direction="row" spacing={0.5}>
+            <Button component={Link} href="/templates" color="inherit"
+              aria-current={pathname.startsWith("/templates") ? "page" : undefined}>模板库</Button>
+            <Button component={Link} href="/history" color="inherit"
+              aria-current={pathname === "/history" ? "page" : undefined}>我的制作</Button>
+          </Stack>
+          <Button color="inherit" aria-label="当前账号与切换" aria-haspopup="dialog" onClick={() => {
+            setError(null);
+            setShowAccess(false);
+            setAccountOpen(true);
+          }}>
+            <Avatar className="avatar" sx={{ width: 25, height: 25, mr: { xs: 0, sm: 1 }, fontSize: 12 }}>
+              {user ? Array.from(user.displayName)[0] : <AccountCircleOutlined fontSize="small" />}
+            </Avatar>
+            <Box component="span" sx={{ ml: { xs: 0.5, sm: 0 }, maxWidth: { xs: "7ch", sm: "16ch" },
+              overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+              {busy ? "连接中" : user?.displayName ?? "登录 / 注册"}
+            </Box>
+          </Button>
+        </Toolbar>
+      </AppBar>
+      {error && !accountOpen && (user || pathname === "/templates") && (
+        <Alert severity="error" className="shell-error" action={<Button color="inherit" onClick={refresh}>重新检查账号</Button>}>
+          {error}
+        </Alert>
+      )}
       <main id="main" tabIndex={-1} ref={main}>{children}</main>
+      <Dialog open={accountOpen} onClose={closeAccount} fullWidth maxWidth="sm"
+        aria-labelledby="account-dialog-title" slotProps={{ paper: { className: "account-dialog" } }}>
+        <DialogTitle id="account-dialog-title" className="dialog-heading">
+          {user ? "账户设置" : "登录 / 注册"}
+          <IconButton aria-label="关闭账户设置" onClick={closeAccount}><Close /></IconButton>
+        </DialogTitle>
+        <DialogContent>
+          {user ? (
+            <Stack spacing={2}>
+              <Paper className="account-profile" elevation={0}>
+                <Stack direction="row" spacing={2} sx={{ alignItems: "center" }}>
+                  <Avatar sx={{ width: 60, height: 60, bgcolor: "#698700" }}>{Array.from(user.displayName)[0]}</Avatar>
+                  <Box sx={{ minWidth: 0, overflowWrap: "anywhere" }}>
+                    <Typography variant="h6">{user.displayName}</Typography>
+                    <Typography color="text.secondary">@{user.username}</Typography>
+                  </Box>
+                </Stack>
+                <Divider sx={{ my: 2 }} />
+                <Typography color="text.secondary" variant="body2">个人历史随账号保存，只有登录该账号才可查看任务和结果。</Typography>
+              </Paper>
+              <Paper variant="outlined" className="account-actions">
+                <Button component={Link} href="/history" color="inherit" startIcon={<History />}
+                  onClick={closeAccount}>
+                  我的制作<ChevronRight className="account-arrow" fontSize="small" />
+                </Button>
+                <Divider />
+                <Button color="inherit" startIcon={<SwitchAccountOutlined />} disabled={busy}
+                  aria-expanded={showAccess} aria-controls={accessId}
+                  onClick={() => { setError(null); setShowAccess((open) => !open); }}>
+                  切换账号<ChevronRight className="account-arrow" fontSize="small" />
+                </Button>
+                <Divider />
+                <Button color="inherit" startIcon={<Logout />} disabled={busy}
+                  onClick={() => void changeSession()}>退出登录</Button>
+              </Paper>
+              <Box id={accessId} hidden={!showAccess}>
+                {showAccess && <AccountAccess busy={busy} error={error} current={user.username}
+                  submit={(credentials) => void changeSession(credentials)} />}
+              </Box>
+              {error && !showAccess && <Alert severity="error">{error}</Alert>}
+            </Stack>
+          ) : <AccountAccess busy={busy} error={error} submit={(credentials) => void changeSession(credentials)} />}
+        </DialogContent>
+      </Dialog>
     </SessionContext.Provider>
   );
 }
 
-export function AccountPrompt() {
-  const { busy, login } = useSession();
+function AccountAccess({ busy, error, current, submit }: {
+  busy: boolean;
+  error: string | null;
+  current?: string;
+  submit: (credentials: Credentials) => void;
+}) {
+  const [mode, setMode] = useState<"login" | "register">("login");
+  const formId = useId();
+  const registering = mode === "register";
+  function send(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (busy) return;
+    const form = new FormData(event.currentTarget);
+    const credentials: Credentials = {
+      username: String(form.get("username") ?? ""), password: String(form.get("password") ?? ""),
+    };
+    if (registering) credentials.displayName = String(form.get("displayName") ?? "");
+    submit(credentials);
+  }
   return (
-    <div className="empty-box">
-      <span className="empty-mark" aria-hidden="true">◈</span>
-      <h2>{busy ? "正在确认账号…" : "选择一个演示账号"}</h2>
-      <p>登录后可以上传图片，制作记录会保存在该账号下。</p>
-      <div className="button-row">
-        {demos.map((demo) => (
-          <button className="secondary-button" disabled={busy} key={demo.username}
-            onClick={() => login(demo.username)}>使用{demo.displayName}</button>
+    <Stack spacing={1.5}>
+      <Tabs value={mode} onChange={(_event, value) => setMode(value)} aria-label="账号操作" variant="fullWidth">
+        <Tab value="login" label={current ? "切换账号" : "账号登录"} disabled={busy} id={formId + "-login"} aria-controls={formId} />
+        <Tab value="register" label="注册账号" disabled={busy} id={formId + "-register"} aria-controls={formId} />
+      </Tabs>
+      <Box role="tabpanel" id={formId} aria-labelledby={formId + "-" + mode}>
+        <Stack component="form" key={mode} onSubmit={send} spacing={1.5}>
+          <TextField name="username" label="用户名" required size="small" autoComplete="username" disabled={busy}
+            helperText={registering ? "3–40 位英文字母、数字、下划线或连字符，以字母或数字开头" : undefined} />
+          {registering && <TextField name="displayName" label="显示名称" required size="small" autoComplete="nickname" disabled={busy} />}
+          <TextField name="password" label="密码" required size="small" type="password" disabled={busy}
+            autoComplete={registering ? "new-password" : "current-password"}
+            helperText={registering ? "至少 8 个字符，UTF-8 编码最多 72 字节" : undefined} />
+          {error && <Alert severity="error">{error}</Alert>}
+          <Button variant="contained" type="submit" disabled={busy}>
+            {busy ? "正在处理…" : registering ? "注册并登录" : "登录"}
+          </Button>
+        </Stack>
+      </Box>
+      <Divider>演示账号</Divider>
+      <Stack direction="row" spacing={1} useFlexGap sx={{ flexWrap: "wrap" }}>
+        {demos.filter((demo) => demo.username !== current).map((demo) => (
+          <Button variant="outlined" color="inherit" disabled={busy} key={demo.username}
+            onClick={() => submit({ username: demo.username, password: "studio-demo" })}>
+            {current ? "切换到 " : "使用"}{demo.displayName}
+          </Button>
         ))}
-      </div>
-    </div>
+      </Stack>
+    </Stack>
+  );
+}
+
+export function AccountPrompt() {
+  const { busy, error, authenticate } = useSession();
+  return (
+    <Paper className="account-prompt panel" variant="outlined">
+      <Typography variant="h6" component="h2">登录后开始制作</Typography>
+      <Typography color="text.secondary" variant="body2" sx={{ mb: 1.5 }}>素材和制作记录保存在你的账号下。</Typography>
+      <AccountAccess busy={busy} error={error} submit={authenticate} />
+    </Paper>
   );
 }

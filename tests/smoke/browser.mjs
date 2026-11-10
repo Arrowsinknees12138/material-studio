@@ -256,7 +256,8 @@ try {
 
   const secondTab = await context.newPage();
   await secondTab.goto("/history");
-  await secondTab.locator("summary[aria-label='当前账号与切换']").click();
+  await secondTab.getByRole("button", { name: "当前账号与切换" }).click();
+  await secondTab.getByRole("button", { name: "切换账号", exact: true }).click();
   await secondTab.getByRole("button", { name: /切换到.*周野/ }).click();
   await page.locator(".avatar").filter({ hasText: /^周$/ }).waitFor();
   const emptyHistory = page.getByRole("heading", { name: "还没有制作记录" });
@@ -349,6 +350,43 @@ try {
   await preview.waitFor({ state: "hidden" });
   assert.equal(await page.locator(".avatar").filter({ hasText: /^周$/ }).count(), 0);
   console.log("Guest requirements, upload caps and formats, keyboard focus, preview deadlines and session recovery verified.");
+
+  await page.setViewportSize({ width: 1280, height: 800 });
+  await page.goto("/templates");
+  await page.locator(".template-card").last().waitFor();
+  assert.equal(await page.locator(".template-grid").evaluate((grid) =>
+    getComputedStyle(grid).gridTemplateColumns.split(" ").length), 6);
+  const account = page.getByRole("button", { name: "当前账号与切换" });
+  await account.click();
+  await dialog.getByRole("tab", { name: "注册账号" }).click();
+  await dialog.getByRole("textbox", { name: /用户名/ }).fill("browser-personal");
+  await dialog.getByRole("textbox", { name: /显示名称/ }).fill("浏览器验收");
+  await dialog.getByLabel(/密码/).fill("browser-private-26");
+  await dialog.getByRole("button", { name: "注册并登录" }).click();
+  await dialog.waitFor({ state: "hidden" });
+  await account.getByText("浏览器验收").waitFor();
+  await account.click();
+  await dialog.getByRole("heading", { name: "账户设置" }).waitFor();
+  await dialog.getByRole("link", { name: "我的制作" }).click();
+  await page.getByRole("heading", { name: "还没有制作记录" }).waitFor();
+  await page.goto("/templates/desert");
+  await choose.waitFor();
+  assert.equal(await page.locator(".workspace-grid").evaluate((grid) => {
+    const [editor, history] = grid.children;
+    return history.getBoundingClientRect().left >= editor.getBoundingClientRect().right;
+  }), true);
+  await page.locator("input[type=file]").setInputFiles({ name: "draft.jpg", mimeType: "image/jpeg", buffer: bytes });
+  await preview.waitFor();
+  await account.click();
+  await dialog.getByRole("button", { name: "切换账号", exact: true }).click();
+  await dialog.getByRole("textbox", { name: /用户名/ }).fill("browser-personal");
+  await dialog.getByLabel(/密码/).fill("incorrect");
+  await dialog.getByRole("button", { name: "登录", exact: true }).click();
+  await dialog.getByText("账号或密码错误。").waitFor();
+  await page.keyboard.press("Escape");
+  await preview.waitFor();
+  assert.equal(await submit.isEnabled(), true);
+  console.log("MUI desktop layout, browser registration, account settings and private history verified.");
 } finally {
   for (const request of held) request.resolve();
   await browser.close();
