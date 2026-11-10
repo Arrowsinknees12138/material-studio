@@ -13,6 +13,12 @@ import org.springframework.web.server.ResponseStatusException;
 
 @RestControllerAdvice
 class ApiErrors {
+    @ExceptionHandler(UnavailableAssets.class)
+    ResponseEntity<Map<String, Object>> unavailableAssets(UnavailableAssets error) {
+        return ResponseEntity.badRequest().body(Map.of(
+                "message", error.getMessage(), "unavailableAssetIds", error.ids()));
+    }
+
     @ExceptionHandler(ResponseStatusException.class)
     ResponseEntity<Map<String, String>> apiError(ResponseStatusException error) {
         return ResponseEntity.status(error.getStatusCode()).body(Map.of("message", error.getReason()));

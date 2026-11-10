@@ -1,5 +1,9 @@
 package studio.material;
 
+import java.time.Instant;
+import java.time.format.DateTimeParseException;
+import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Locale;
@@ -22,6 +26,21 @@ import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.ResponseStatus;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ResponseStatusException;
+
+record TaskPage(List<TaskView> items, String nextCursor) {}
+
+class UnavailableAssets extends RuntimeException {
+    private final List<String> ids;
+
+    UnavailableAssets(List<String> ids) {
+        super("有素材已失效或不符合模板要求，请重新上传。");
+        this.ids = List.copyOf(ids);
+    }
+
+    List<String> ids() {
+        return ids;
+    }
+}
 
 record Submission(String templateId, List<String> assetIds, UUID requestId, TaskStage failAt, Integer delayMs) {}
 
@@ -74,13 +93,17 @@ class Tasks {
         if (new HashSet<>(ids).size() != ids.size()) {
             throw badRequest("请为每个槽位上传图片，素材记录不能重复。");
         }
+        List<String> unavailable = new ArrayList<>();
         for (String id : ids.stream().sorted().toList()) {
             Asset asset = assets.lockOwnedReady(id, ownerId);
             if (asset == null || !template.id().equals(asset.templateId()) ||
                     !template.view().acceptedMimeTypes().contains(asset.contentType())
                     || asset.byteSize() > template.maxFileSizeBytes()) {
-                throw badRequest("有素材不属于当前账号或不符合模板要求，请重新上传。");
+                unavailable.add(id);
             }
+        }
+        if (!unavailable.isEmpty()) {
+            throw new UnavailableAssets(unavailable);
         }
         String taskId = UUID.randomUUID().toString();
         tasks.insertOrKeep(new NewTask(taskId, ownerId, template.id(), requestId, input.failAt(),
@@ -97,6 +120,51 @@ class Tasks {
 
     List<TaskView> list(long ownerId, String templateId) {
         return tasks.listOwned(ownerId, templateId).stream().map(Task::view).toList();
+    }
+
+    TaskPage page(long ownerId, String templateId, boolean active, String cursor, int limit) {
+        if (limit < 1 || limit > 50) {
+            throw badRequest("每页数量应在 1 到 50 之间。");
+        }
+        Instant beforeTime = null;
+        String beforeId = null;
+        if (cursor != null) {
+            String[] parts = cursor.split("\\|", -1);
+            try {
+                if (parts.length != 2) throw new IllegalArgumentException();
+                beforeTime = Instant.parse(parts[0]);
+                beforeId = taskId(parts[1]);
+            } catch (DateTimeParseException | IllegalArgumentException invalid) {
+                throw badRequest("历史记录游标无效。");
+            }
+        }
+        List<Task> rows = tasks.pageOwned(ownerId, templateId, active, beforeTime, beforeId, limit + 1);
+        String next = null;
+        if (rows.size() > limit) {
+            Task last = rows.get(limit - 1);
+            next = last.createdAt() + "|" + last.id();
+        }
+        return new TaskPage(rows.stream().limit(limit).map(Task::view).toList(), next);
+    }
+
+    List<TaskView> updates(long ownerId, String requested) {
+        String[] ids = requested.split(",", -1);
+        if (ids.length > 50) {
+            throw badRequest("每次最多查询 50 条任务。");
+        }
+        List<String> validIds;
+        try {
+            validIds = Arrays.stream(ids).map(Tasks::taskId).distinct().toList();
+        } catch (IllegalArgumentException invalid) {
+            throw badRequest("任务编号无效。");
+        }
+        return tasks.findOwnedBatch(ownerId, validIds).stream().map(Task::view).toList();
+    }
+
+    private static String taskId(String value) {
+        String canonical = UUID.fromString(value).toString();
+        if (!canonical.equalsIgnoreCase(value)) throw new IllegalArgumentException();
+        return canonical;
     }
 
     Task requireOwned(long ownerId, String id) {
@@ -141,6 +209,19 @@ class TaskController {
     @GetMapping
     List<TaskView> list(@RequestParam(required = false) String templateId, HttpServletRequest request) {
         return tasks.list(accounts.requireOwner(request), templateId);
+    }
+
+    @GetMapping("/history")
+    TaskPage page(@RequestParam(required = false) String templateId,
+                  @RequestParam(defaultValue = "false") boolean active,
+                  @RequestParam(required = false) String cursor,
+                  @RequestParam(defaultValue = "20") int limit, HttpServletRequest request) {
+        return tasks.page(accounts.requireOwner(request), templateId, active, cursor, limit);
+    }
+
+    @GetMapping("/updates")
+    List<TaskView> updates(@RequestParam String ids, HttpServletRequest request) {
+        return tasks.updates(accounts.requireOwner(request), ids);
     }
 
     @GetMapping("/{id}")

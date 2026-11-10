@@ -5,12 +5,12 @@ export interface TaskEntry {
   queryError: string | null;
 }
 
-type ReadTask = (id: string, signal: AbortSignal) => Promise<Task>;
-type Poll = { timer?: ReturnType<typeof setTimeout>; controller?: AbortController };
+type ReadTasks = (ids: string[], signal: AbortSignal) => Promise<Task[]>;
 
 const stages: TaskStage[] = ["CHECK_INPUTS", "GENERATE", "FINALIZE"];
+const batchSize = 50;
 
-export function isActive(task: Task): boolean {
+function isActive(task: Task): boolean {
   return task.status === "QUEUED" || task.status === "RUNNING";
 }
 
@@ -20,83 +20,91 @@ function order(task: Task): number {
   return task.stage ? stages.indexOf(task.stage) + 2 : 1;
 }
 
-export function createTaskFeed(read: ReadTask, onChange: (entries: TaskEntry[]) => void, interval = 2000) {
+export function createTaskFeed(read: ReadTasks, onChange: (entries: TaskEntry[]) => void, interval = 2000) {
   const entries = new Map<string, TaskEntry>();
-  const polls = new Map<string, Poll>();
+  const visible = new Set<string>();
+  const active = new Set<string>();
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let request: AbortController | undefined;
   let disposed = false;
 
   function publish() {
-    onChange(Array.from(entries.values()).sort((a, b) =>
-      b.task.createdAt.localeCompare(a.task.createdAt) || b.task.id.localeCompare(a.task.id),
+    onChange(Array.from(visible, (id) => entries.get(id)!).sort((a, b) =>
+      Date.parse(b.task.createdAt) - Date.parse(a.task.createdAt) || b.task.id.localeCompare(a.task.id),
     ));
   }
 
-  function schedule(id: string) {
-    const entry = entries.get(id);
-    if (disposed || !entry || !isActive(entry.task) || polls.has(id)) return;
-    polls.set(id, { timer: setTimeout(() => void poll(id), interval) });
+  function schedule() {
+    if (!active.size) {
+      clearTimeout(timer);
+      timer = undefined;
+    } else if (!disposed && !request && timer === undefined) {
+      timer = setTimeout(() => void poll([...active]), interval);
+    }
   }
 
   function merge(task: Task) {
     const entry = entries.get(task.id);
     if (entry && (!isActive(entry.task) || order(task) < order(entry.task))) return;
     entries.set(task.id, { task, queryError: null });
-    if (!isActive(task)) {
-      stop(task.id);
-    } else {
-      schedule(task.id);
-    }
+    if (isActive(task)) active.add(task.id);
+    else active.delete(task.id);
   }
 
-  function stop(id: string) {
-    const pending = polls.get(id);
-    if (pending) {
-      clearTimeout(pending.timer);
-      pending.controller?.abort();
-      polls.delete(id);
-    }
-  }
-
-  async function poll(id: string) {
+  function setQueryError(id: string, message: string) {
     const entry = entries.get(id);
-    if (disposed || !entry || !isActive(entry.task) || polls.get(id)?.controller) return;
-    stop(id);
-    const controller = new AbortController();
-    polls.set(id, { controller });
+    if (entry && active.has(id)) entries.set(id, { ...entry, queryError: message });
+  }
 
+  async function poll(ids: string[]) {
+    if (disposed || request || !ids.length) return;
+    clearTimeout(timer);
+    timer = undefined;
+    const controller = new AbortController();
+    request = controller;
     try {
-      const task = await read(id, controller.signal);
-      if (disposed || controller.signal.aborted || task.id !== id) return;
-      merge(task);
-      publish();
-    } catch (error) {
-      if (disposed || controller.signal.aborted) return;
-      const current = entries.get(id);
-      if (current) {
-        entries.set(id, {
-          ...current,
-          queryError: error instanceof Error ? error.message : "查询暂时不可用。",
-        });
+      for (let offset = 0; offset < ids.length && !controller.signal.aborted; offset += batchSize) {
+        const batch = ids.slice(offset, offset + batchSize).filter((id) => active.has(id));
+        if (!batch.length) continue;
+        try {
+          const updates = await read(batch, controller.signal);
+          if (controller.signal.aborted) return;
+          const byId = new Map(updates.map((task) => [task.id, task]));
+          for (const id of batch) {
+            const update = byId.get(id);
+            if (update) merge(update);
+            else setQueryError(id, "暂时无法读取该任务。");
+          }
+        } catch (error) {
+          if (controller.signal.aborted) return;
+          const message = error instanceof Error ? error.message : "查询暂时不可用。";
+          batch.forEach((id) => setQueryError(id, message));
+        }
         publish();
       }
     } finally {
-      if (polls.get(id)?.controller === controller) polls.delete(id);
-      schedule(id);
+      request = undefined;
+      schedule();
     }
   }
 
   return {
-    add(tasks: Task[]) {
+    add(tasks: Task[], show = true) {
       if (disposed) return;
-      tasks.forEach(merge);
+      tasks.forEach((task) => {
+        merge(task);
+        if (show) visible.add(task.id);
+      });
       publish();
+      schedule();
     },
     retry(id: string) {
-      void poll(id);
+      if (active.has(id)) void poll([id]);
     },
     dispose() {
       disposed = true;
-      polls.forEach((_, id) => stop(id));
+      clearTimeout(timer);
+      request?.abort();
     },
   };
 }

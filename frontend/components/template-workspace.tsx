@@ -63,6 +63,8 @@ function createRequestId() {
 }
 
 function CreationForm({ template, accept }: { template: Template; accept: (task: Task) => void }) {
+  const { user } = useSession();
+  const headers = { "X-Studio-Account": user?.username ?? "" };
   const [slots, setSlots] = useState<(Slot | undefined)[]>(() => Array(template.requiredImageCount).fill(undefined));
   const [submitting, setSubmitting] = useState(false);
   const [feedback, setFeedback] = useState<{ error: boolean; message: string } | null>(null);
@@ -109,7 +111,7 @@ function CreationForm({ template, accept }: { template: Template; accept: (task:
       const form = new FormData();
       form.set("templateId", template.id);
       form.set("file", file);
-      const asset = await api<Asset>("/assets", { method: "POST", body: form, signal: controller.signal });
+      const asset = await api<Asset>("/assets", { method: "POST", headers, body: form, signal: controller.signal });
       if (uploadRequests.current.get(index) === controller) updateSlot(index, { state: "ready", file, asset });
     } catch (error) {
       if (uploadRequests.current.get(index) === controller) {
@@ -133,16 +135,26 @@ function CreationForm({ template, accept }: { template: Template; accept: (task:
     setSubmitting(true);
     setFeedback(null);
     try {
-      const task = await api<Task>("/tasks", jsonBody({
-        templateId: template.id, assetIds, requestId: request.current.id,
-      }, controller.signal));
+      const options = jsonBody({ templateId: template.id, assetIds, requestId: request.current.id }, controller.signal);
+      const task = await api<Task>("/tasks", {
+        ...options, headers: { ...headers, "Content-Type": "application/json" },
+      });
       if (!controller.signal.aborted) {
         accept(task);
         request.current = null;
         setFeedback({ error: false, message: "任务已受理，可以在记录中查看进度。" });
       }
     } catch (error) {
-      if (!controller.signal.aborted) setFeedback({ error: true, message: errorMessage(error) });
+      if (controller.signal.aborted) return;
+      if (error instanceof ApiError && error.unavailableAssetIds.length) {
+        const unavailable = new Set(error.unavailableAssetIds);
+        setSlots((current) => current.map((slot) =>
+          slot?.state === "ready" && unavailable.has(slot.asset.assetId)
+            ? { state: "error", file: slot.file, message: "素材已失效，请重新上传。" }
+            : slot,
+        ));
+      }
+      setFeedback({ error: true, message: errorMessage(error) });
     } finally {
       submitRequest.current = null;
       if (!controller.signal.aborted) setSubmitting(false);

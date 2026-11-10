@@ -25,11 +25,11 @@ describe("task request deadlines", () => {
           },
         }));
       })
-      .mockResolvedValueOnce(Response.json(finished));
+      .mockResolvedValueOnce(Response.json([finished]));
     vi.stubGlobal("fetch", fetchMock);
 
     let entries: TaskEntry[] = [];
-    const feed = createTaskFeed((id, signal) => api<Task>("/tasks/" + id, { signal }),
+    const feed = createTaskFeed((ids, signal) => api<Task[]>("/tasks/updates?ids=" + ids.join(","), { signal }),
       (value) => { entries = value; }, 50);
     feed.add([active]);
 

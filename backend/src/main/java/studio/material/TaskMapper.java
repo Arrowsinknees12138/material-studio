@@ -65,6 +65,25 @@ interface TaskMapper {
         """)
     List<Task> listOwned(long ownerId, String templateId);
 
+    @Select("<script>" + SELECT_TASK + """
+        WHERE t.owner_id = #{ownerId}
+        <if test="templateId != null">AND t.template_id = #{templateId}</if>
+        <if test="active">AND t.status IN ('QUEUED', 'RUNNING')</if>
+        <if test="beforeId != null">
+          AND (t.created_at &lt; #{beforeTime} OR (t.created_at = #{beforeTime} AND t.id &lt; #{beforeId}))
+        </if>
+        ORDER BY t.created_at DESC, t.id DESC LIMIT #{limit}
+        </script>
+        """)
+    List<Task> pageOwned(long ownerId, String templateId, boolean active, Instant beforeTime, String beforeId, int limit);
+
+    @Select("<script>" + SELECT_TASK + """
+        WHERE t.owner_id = #{ownerId} AND t.id IN
+        <foreach collection="ids" item="id" open="(" separator="," close=")">#{id}</foreach>
+        </script>
+        """)
+    List<Task> findOwnedBatch(long ownerId, List<String> ids);
+
     @Insert("""
         INSERT INTO tasks (id, owner_id, template_id, request_id, status, fail_at, check_ms, generate_ms, finalize_ms)
         VALUES (#{id}, #{ownerId}, #{templateId}, #{requestId}, 'QUEUED',

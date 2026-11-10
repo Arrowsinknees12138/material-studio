@@ -80,6 +80,20 @@ async function prepare(restart) {
   const id = await submit(second, cookie, used, 6000);
   const targetStage = restart ? "GENERATE" : "CHECK_INPUTS";
   await waitForTask(cookie, id, (task) => task.status === "RUNNING" && task.stage === targetStage);
+  const active = await (await request(web, "/api/tasks/history?active=true&limit=50", { cookie })).json();
+  assert.ok(active.items.some((task) => task.id === id));
+  if (restart) {
+    const firstPage = await (await request(web, "/api/tasks/history?limit=1", { cookie })).json();
+    assert.equal(firstPage.items.length, 1);
+    assert.ok(firstPage.nextCursor);
+    const secondPage = await (await request(web, "/api/tasks/history?limit=1&cursor="
+      + encodeURIComponent(firstPage.nextCursor), { cookie })).json();
+    assert.equal(secondPage.items.length, 1);
+    assert.notEqual(secondPage.items[0].id, firstPage.items[0].id);
+    const updates = await (await request(web, "/api/tasks/updates?ids=" + [id, secondPage.items[0].id],
+      { cookie })).json();
+    assert.ok(updates.some((task) => task.id === id));
+  }
   console.log([id, used, unused].filter(Boolean).join(" "));
 }
 
@@ -102,7 +116,15 @@ async function verify() {
   const other = await login(web, "zhou");
   await request(web, "/api/tasks/" + id, { cookie: other, status: 404 });
   await request(web, done.resultUrl, { cookie: other, status: 404 });
-  if (unused) await request(web, "/api/assets/" + unused + "/content", { cookie, status: 404 });
+  const foreignBatch = await request(web, "/api/tasks/updates?ids=" + id, { cookie: other });
+  assert.deepEqual(await foreignBatch.json(), []);
+  if (unused) {
+    await request(web, "/api/assets/" + unused + "/content", { cookie, status: 404 });
+    const expired = await request(web, "/api/tasks", { cookie, status: 400, json: {
+      templateId: "moon", assetIds: [unused], requestId: crypto.randomUUID(),
+    } });
+    assert.deepEqual((await expired.json()).unavailableAssetIds, [unused]);
+  }
   console.log("Recovered task, result, permissions and asset references verified.");
 }
 

@@ -4,7 +4,8 @@ import { chromium } from "playwright";
 
 const baseURL = "http://web:3000";
 const browser = await chromium.launch();
-const page = await browser.newPage({ baseURL, viewport: { width: 320, height: 740 } });
+const context = await browser.newContext({ baseURL, viewport: { width: 320, height: 740 } });
+const page = await context.newPage();
 page.setDefaultTimeout(12000);
 page.on("pageerror", (error) => console.error(error));
 
@@ -121,7 +122,41 @@ try {
   await page.keyboard.press("Escape");
   await page.getByRole("dialog").waitFor({ state: "hidden" });
   assert.equal(await result.evaluate((node) => node === document.activeElement), true);
-  console.log("320px keyboard, file signature, upload races and result dialog verified.");
+  const secondTab = await context.newPage();
+  await secondTab.goto("/history");
+  await secondTab.locator("summary[aria-label='当前账号与切换']").click();
+  await secondTab.getByRole("button", { name: /切换到.*周野/ }).click();
+  await page.locator(".avatar").filter({ hasText: /^周$/ }).waitFor();
+  await result.waitFor({ state: "hidden" });
+  const stale = await page.request.get("/api/tasks/history", {
+    headers: { "X-Studio-Account": "lin" },
+  });
+  assert.equal(stale.status(), 401);
+  await secondTab.close();
+
+  await page.goto("/templates/coast");
+  for (let index = 0; index < 2; index++) {
+    await page.locator("input[type=file]").nth(index).setInputFiles({
+      name: "coast-" + index + ".jpg", mimeType: "image/jpeg", buffer: bytes,
+    });
+    await page.getByRole("img", { name: "素材 " + (index + 1) + " 预览" }).waitFor();
+  }
+  const expiredPreview = page.getByRole("img", { name: "素材 1 预览" });
+  const expiredId = (await expiredPreview.getAttribute("src")).split("/")[3];
+  await page.route("**/api/tasks", (route) => route.fulfill({
+    status: 400, json: { message: "有素材已失效，请重新上传。", unavailableAssetIds: [expiredId] },
+  }));
+  await submit.press("Enter");
+  await page.getByText("素材已失效，请重新上传。", { exact: true }).waitFor();
+  assert.equal(await expiredPreview.count(), 0);
+  assert.equal(await page.getByRole("img", { name: "素材 2 预览" }).count(), 1);
+  assert.equal(await submit.isDisabled(), true);
+  await page.locator("input[type=file]").first().setInputFiles({
+    name: "replacement.jpg", mimeType: "image/jpeg", buffer: bytes,
+  });
+  await expiredPreview.waitFor();
+  assert.equal(await submit.isEnabled(), true);
+  console.log("320px keyboard, file signature, upload races, cross-tab session, expired slots and result dialog verified.");
 } finally {
   for (const request of held) request.resolve();
   await browser.close();

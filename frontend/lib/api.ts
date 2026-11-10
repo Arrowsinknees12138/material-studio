@@ -41,6 +41,13 @@ export interface Task {
   errorMessage: string | null;
 }
 
+export interface TaskPage {
+  items: Task[];
+  nextCursor: string | null;
+}
+
+export const sessionCheckEvent = "studio:check-session";
+
 export const stageLabels: Record<TaskStage, string> = {
   CHECK_INPUTS: "素材检查",
   GENERATE: "模拟生成",
@@ -48,7 +55,7 @@ export const stageLabels: Record<TaskStage, string> = {
 };
 
 export class ApiError extends Error {
-  constructor(readonly status: number, message: string) {
+  constructor(readonly status: number, message: string, readonly unavailableAssetIds: string[] = []) {
     super(message);
   }
 }
@@ -66,7 +73,12 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
     const response = await fetch("/api" + path, { ...options, headers, signal, cache: "no-store" });
     if (!response.ok) {
       const payload = await response.json().catch(() => null);
-      throw new ApiError(response.status, payload?.message ?? "请求失败，请重试。");
+      if (response.status === 401 && !path.startsWith("/session") && typeof window !== "undefined") {
+        window.dispatchEvent(new Event(sessionCheckEvent));
+      }
+      const ids = payload?.unavailableAssetIds;
+      throw new ApiError(response.status, payload?.message ?? "请求失败，请重试。",
+        Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string") : []);
     }
     if (response.status === 204) return undefined as T;
     return await response.json() as T;

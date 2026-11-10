@@ -125,20 +125,22 @@ cd backend
 | `POST /api/assets` | Multipart `templateId`、`file` | `201 {assetId,previewUrl,contentType,byteSize}` |
 | `GET /api/assets/{id}/content` | 素材 ID | 图片 |
 | `POST /api/tasks` | `{templateId,assetIds,requestId,failAt?,delayMs?}` | `202` 和任务对象，`id` 即任务 ID |
-| `GET /api/tasks` | 可选 `templateId` | 当前用户的任务对象数组，新任务优先 |
+| `GET /api/tasks` | 可选 `templateId` | 兼容接口，返回当前用户的任务数组 |
+| `GET /api/tasks/history` | 可选 `templateId`、`active`、`cursor` 和 `limit`（默认 20，最多 50） | `{items,nextCursor}`，新任务优先 |
+| `GET /api/tasks/updates` | `ids` 为逗号分隔的任务 ID，最多 50 个 | 当前用户可访问的任务数组 |
 | `GET /api/tasks/{id}` | 任务 ID | 任务对象 |
 | `GET /api/tasks/{id}/result` | 已成功任务的 ID | JPEG 图片 |
 
 任务对象字段为 `id`、`templateId`、`templateTitle`、`status`、`stage`、`createdAt`、`completedAt`、`resultUrl`、`errorMessage`。时间以 UTC ISO 8601 返回。提交的 `requestId` 为 UUID，同一用户重复提交同一个 `requestId` 时返回原任务。成功受理一条任务后，下一次制作应使用新的 `requestId`。
 
-Java 使用 BCrypt 校验演示账号，身份保存在由 Spring Session JDBC 管理的 MySQL 会话。Cookie 设置 `HttpOnly` 和 `SameSite=Lax`。Java 使用会话用户过滤任务、素材和结果。跨账号读取资源返回 `404`，登录失效时私有接口返回 `401`。浏览器按文件头识别 JPEG 或 PNG，即使系统没有提供 MIME 也可上传。Java 按模板校验大小并解码校验内容。模拟器读取已保存的文件，上传预览同样来自服务端。
+Java 使用 BCrypt 校验演示账号，身份保存在由 Spring Session JDBC 管理的 MySQL 会话。Cookie 设置 `HttpOnly` 和 `SameSite=Lax`。Java 使用会话用户过滤任务、素材和结果。网页跨标签页切换账号时重新读取会话，并为任务和上传请求附上页面显示的账号，以便 Java 拒绝旧页面发出的请求。素材失效时，提交接口通过 `unavailableAssetIds` 标明需要重传的槽位。跨账号读取资源返回 `404`，登录失效时私有接口返回 `401`。浏览器按文件头识别 JPEG 或 PNG，即使系统没有提供 MIME 也可上传。Java 按模板校验大小并解码校验内容。模拟器读取已保存的文件，上传预览同样来自服务端。
 
 ## 任务执行与前端状态
 
 - 提交事务写入 `QUEUED` 任务及素材关联。事务完成后返回任务信息，worker 独立扫描到期任务。
 - Java 将任务切换为 `RUNNING / CHECK_INPUTS`，保存该阶段的到期时间。到期后检查素材可读性，再推进到 `GENERATE`、`FINALIZE`。阶段、到期时间和生成的样图名随检查点提交。模拟延迟期间不占用线程或事务。到期后的短事务通过 `FOR UPDATE SKIP LOCKED` 锁定一条任务，在提交前完成该阶段的少量本地文件操作。
 - 结果整理将该模板预置的 JPEG 写到数据卷，再置为 `SUCCEEDED`。任何步骤失败都停止后续步骤，保留失败阶段和原因，状态为 `FAILED`。
-- Web 按任务 ID 合并历史和查询结果。各任务独立轮询，进入终态后停止。读取请求超过 8 秒会取消本次请求，并显示可重试的查询错误。已有任务状态保留，其他任务继续更新。换账号或离开页面时取消请求和计时器。
+- Web 按任务 ID 合并历史和查询结果。历史每页加载 20 条。活跃任务独立发现，即使尚未翻到对应记录也会跟踪。每次最多合并 50 个任务 ID，进入终态后停止跟踪。读取请求超过 8 秒会取消本次请求，并显示可重试的查询错误。已有任务状态保留，其他任务继续更新。换账号或离开页面时取消请求和计时器。
 - Java 重启后从已提交的阶段继续。若进程在一个步骤提交前中断，其他实例或重启后的实例会重新执行该步骤。结果路径由任务 ID 确定，重复整理同一份样图时使用原子文件替换。已提交的步骤会保留，MySQL 会话在有效期内也可以继续使用。
 
 ### 多实例与断点续作
@@ -183,7 +185,7 @@ docker compose ps api
 bash tests/smoke/run.sh
 ```
 
-GitHub Actions 的 `compose-smoke` 任务也运行这套检查。脚本使用独立 Compose 项目和临时数据卷，测试结束后清理这些资源。Chromium 测试在 320px 视口验证键盘上传、无 MIME 的有效图片、伪造文件、上传替换与移除的迟到响应，以及结果预览焦点。服务端测试验证共享会话、指定阶段失败、Java 进程重启、MySQL 短暂不可用后的恢复，以及清理后文件与记录的一致性。
+GitHub Actions 的 `compose-smoke` 任务也运行这套检查。脚本使用独立 Compose 项目和临时数据卷，测试结束后清理这些资源。Chromium 测试在 320px 视口验证键盘上传、无 MIME 的有效图片、伪造文件、上传替换与移除的迟到响应，结果预览焦点、跨标签页账号同步和失效素材槽位。服务端测试验证历史分页、批量查询、共享会话、指定阶段失败、Java 进程重启、MySQL 短暂不可用后的恢复，以及清理后文件与记录的一致性。
 
 ## AI 工作流与来源
 

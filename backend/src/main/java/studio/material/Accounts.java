@@ -66,6 +66,10 @@ class Accounts {
         if (user == null) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "请先登录演示账号。");
         }
+        String expected = request.getHeader("X-Studio-Account");
+        if (expected != null && !expected.equals(user.username())) {
+            throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "账号已切换，请重试。");
+        }
         return user.id();
     }
 

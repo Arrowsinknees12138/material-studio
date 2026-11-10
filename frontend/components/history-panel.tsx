@@ -3,8 +3,9 @@
 /* eslint-disable @next/next/no-img-element -- Private images need the browser session cookie. */
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import { api, errorMessage, stageLabels, type Task, type TaskStatus } from "../lib/api";
+import { api, errorMessage, stageLabels, type Task, type TaskPage, type TaskStatus } from "../lib/api";
 import { createTaskFeed, type TaskEntry } from "../lib/task-feed";
+import { useSession } from "./studio-shell";
 
 const labels: Record<TaskStatus, string> = {
   QUEUED: "等待处理",
@@ -16,33 +17,87 @@ const labels: Record<TaskStatus, string> = {
 const dateFormat = new Intl.DateTimeFormat("zh-CN", { dateStyle: "short", timeStyle: "short" });
 
 export function useHistory(templateId?: string) {
+  const { user } = useSession();
+  const username = user?.username ?? "";
   const [entries, setEntries] = useState<TaskEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [attempt, setAttempt] = useState(0);
+  const [trackingError, setTrackingError] = useState<string | null>(null);
+  const [request, setRequest] = useState<{ cursor: string | null; attempt: number }>({ cursor: null, attempt: 0 });
+  const [scan, setScan] = useState(0);
+  const [nextCursor, setNextCursor] = useState<string | null>(null);
+  const loadedMore = useRef(false);
   const feed = useRef<ReturnType<typeof createTaskFeed> | null>(null);
 
   useEffect(() => {
-    const instance = createTaskFeed((id, signal) => api<Task>("/tasks/" + id, { signal }), setEntries);
+    const instance = createTaskFeed((ids, signal) => {
+      const query = new URLSearchParams({ ids: ids.join(",") });
+      return api<Task[]>("/tasks/updates?" + query, { signal, headers: { "X-Studio-Account": username } });
+    }, setEntries);
     feed.current = instance;
     return () => { instance.dispose(); feed.current = null; };
-  }, []);
+  }, [username]);
 
   useEffect(() => {
     const controller = new AbortController();
-    const query = templateId ? "?templateId=" + encodeURIComponent(templateId) : "";
-    void api<Task[]>("/tasks" + query, { signal: controller.signal })
-      .then((tasks) => { if (!controller.signal.aborted) feed.current?.add(tasks); })
+    const query = new URLSearchParams();
+    if (templateId) query.set("templateId", templateId);
+    if (request.cursor) query.set("cursor", request.cursor);
+    void api<TaskPage>("/tasks/history?" + query, {
+      signal: controller.signal, headers: { "X-Studio-Account": username },
+    })
+      .then((page) => {
+        if (controller.signal.aborted) return;
+        feed.current?.add(page.items);
+        if (request.cursor || !loadedMore.current) setNextCursor(page.nextCursor);
+        if (request.cursor) loadedMore.current = true;
+      })
       .catch((problem) => { if (!controller.signal.aborted) setError(errorMessage(problem)); })
       .finally(() => { if (!controller.signal.aborted) setLoading(false); });
     return () => controller.abort();
-  }, [attempt, templateId]);
+  }, [request, templateId, username]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    async function findActive() {
+      const query = new URLSearchParams({ active: "true", limit: "50" });
+      if (templateId) query.set("templateId", templateId);
+      let cursor: string | null = null;
+      do {
+        if (cursor) query.set("cursor", cursor);
+        const page = await api<TaskPage>("/tasks/history?" + query, {
+          signal: controller.signal, headers: { "X-Studio-Account": username },
+        });
+        if (controller.signal.aborted) return;
+        feed.current?.add(page.items, false);
+        cursor = page.nextCursor;
+      } while (cursor);
+    }
+
+    void findActive().catch((problem) => {
+      if (!controller.signal.aborted) setTrackingError(errorMessage(problem));
+    });
+    return () => controller.abort();
+  }, [scan, templateId, username]);
+
+  function load(cursor: string | null) {
+    setError(null);
+    setLoading(true);
+    setRequest((current) => ({ cursor, attempt: current.attempt + 1 }));
+  }
+
+  function refreshTracking() {
+    setTrackingError(null);
+    setScan((value) => value + 1);
+  }
 
   return {
-    entries, loading, error,
+    entries, loading, error, trackingError, nextCursor, refreshTracking,
     accept: (task: Task) => feed.current?.add([task]),
     retry: (id: string) => feed.current?.retry(id),
-    refresh: () => { setError(null); setLoading(true); setAttempt((value) => value + 1); },
+    retryPage: () => load(request.cursor),
+    loadMore: () => { if (nextCursor) load(nextCursor); },
+    refresh: () => { load(null); refreshTracking(); },
   };
 }
 
@@ -65,7 +120,11 @@ export function HistoryPanel({ history, full = false }: { history: ReturnType<ty
           onClick={history.refresh} disabled={history.loading}>↻</button>
       </header>
       {history.error && <div className="notice" role="alert">
-        {history.error} <button className="text-button" onClick={history.refresh}>重新加载</button>
+        {history.error} <button className="text-button" onClick={history.retryPage}>重新加载</button>
+      </div>}
+      {history.trackingError && <div className="notice" role="alert">
+        暂时无法恢复进行中的任务 · {history.trackingError}{" "}
+        <button className="text-button" onClick={history.refreshTracking}>重试跟踪</button>
       </div>}
       {history.loading && <p className="history-loading" role="status">正在读取制作记录…</p>}
       {!history.loading && !history.error && history.entries.length === 0 && (
@@ -105,6 +164,9 @@ export function HistoryPanel({ history, full = false }: { history: ReturnType<ty
           ))}
         </div>
       )}
+      {history.nextCursor && <div className="button-row">
+        <button className="secondary-button" onClick={history.loadMore} disabled={history.loading}>加载更多记录</button>
+      </div>}
       <dialog className="preview-dialog" ref={dialog} aria-labelledby="preview-title" onClose={() => setPreview(null)}>
         {preview && (
           <>

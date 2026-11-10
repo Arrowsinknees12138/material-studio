@@ -3,8 +3,9 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { createContext, type ReactNode, useContext, useEffect, useRef, useState } from "react";
-import { api, errorMessage, jsonBody, type User } from "../lib/api";
+import { api, errorMessage, jsonBody, sessionCheckEvent, type User } from "../lib/api";
 
+const sessionChangeKey = "studio:session-changed";
 const demos = [{ username: "lin", displayName: "林夏" }, { username: "zhou", displayName: "周野" }];
 
 interface Session {
@@ -29,16 +30,52 @@ export function StudioShell({ children }: { children: ReactNode }) {
   const [error, setError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const action = useRef<AbortController | null>(null);
+  const checking = useRef<AbortController | null>(null);
+  const checkAfterAction = useRef(false);
   const menu = useRef<HTMLDetailsElement>(null);
   const pathname = usePathname();
 
   useEffect(() => {
-    const controller = new AbortController();
-    void api<{ user: User | null }>("/session", { signal: controller.signal })
-      .then((response) => { if (!controller.signal.aborted) setUser(response.user); })
-      .catch((problem) => { if (!controller.signal.aborted) setError(errorMessage(problem)); })
-      .finally(() => { if (!controller.signal.aborted) setBusy(false); });
-    return () => controller.abort();
+    function check() {
+      if (action.current) return;
+      checking.current?.abort();
+      const controller = new AbortController();
+      checking.current = controller;
+      void api<{ user: User | null }>("/session", { signal: controller.signal })
+        .then((response) => {
+          if (!controller.signal.aborted) {
+            setUser(response.user);
+            setError(null);
+          }
+        })
+        .catch((problem) => { if (!controller.signal.aborted) setError(errorMessage(problem)); })
+        .finally(() => { if (!controller.signal.aborted) setBusy(false); });
+    }
+
+    function synchronize() {
+      if (action.current) {
+        checkAfterAction.current = true;
+        return;
+      }
+      setUser(null);
+      setBusy(true);
+      check();
+    }
+
+    function onStorage(event: StorageEvent) {
+      if (event.key === sessionChangeKey) synchronize();
+    }
+
+    check();
+    window.addEventListener("focus", check);
+    window.addEventListener("storage", onStorage);
+    window.addEventListener(sessionCheckEvent, synchronize);
+    return () => {
+      checking.current?.abort();
+      window.removeEventListener("focus", check);
+      window.removeEventListener("storage", onStorage);
+      window.removeEventListener(sessionCheckEvent, synchronize);
+    };
   }, [refreshKey]);
 
   useEffect(() => () => action.current?.abort(), []);
@@ -53,6 +90,7 @@ export function StudioShell({ children }: { children: ReactNode }) {
     if (busy || action.current) return;
     if (menu.current) menu.current.open = false;
     const controller = new AbortController();
+    checking.current?.abort();
     action.current = controller;
     setBusy(true);
     setError(null);
@@ -65,11 +103,24 @@ export function StudioShell({ children }: { children: ReactNode }) {
         await api("/session/logout", { method: "POST", signal: controller.signal });
         if (!controller.signal.aborted) setUser(null);
       }
+      if (!controller.signal.aborted) {
+        try {
+          localStorage.setItem(sessionChangeKey, crypto.getRandomValues(new Uint32Array(2)).join("-"));
+        } catch {
+          // Focus rechecks the session when storage is unavailable.
+        }
+      }
     } catch (problem) {
       if (!controller.signal.aborted) setError(errorMessage(problem));
     } finally {
       action.current = null;
-      if (!controller.signal.aborted) setBusy(false);
+      if (!controller.signal.aborted && checkAfterAction.current) {
+        checkAfterAction.current = false;
+        setUser(null);
+        refresh();
+      } else if (!controller.signal.aborted) {
+        setBusy(false);
+      }
     }
   }
 

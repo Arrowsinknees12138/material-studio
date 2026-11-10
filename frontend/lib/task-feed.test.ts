@@ -10,50 +10,57 @@ function task(id: string, status: Task["status"] = "RUNNING"): Task {
   };
 }
 
-function pending<T>() {
-  let resolve!: (value: T) => void;
-  let reject!: (error: Error) => void;
-  const promise = new Promise<T>((res, rej) => { resolve = res; reject = rej; });
-  return { promise, resolve, reject };
-}
-
 describe("task feed", () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
-  it("keeps responses and query errors isolated across concurrent tasks", async () => {
+  it("batches tasks, keeps each status independent, and retries only an active task", async () => {
     let entries: TaskEntry[] = [];
-    const a = pending<Task>();
-    const b = pending<Task>();
-    const read = vi.fn((id: string) => id === "a" ? a.promise : b.promise);
+    const read = vi.fn<(ids: string[], signal: AbortSignal) => Promise<Task[]>>()
+      .mockResolvedValueOnce([task("b", "FAILED")])
+      .mockResolvedValueOnce([{ ...task("a", "SUCCEEDED"), resultUrl: "/api/tasks/a/result" }]);
     const feed = createTaskFeed(read, (value) => { entries = value; }, 50);
     feed.add([task("a"), task("b", "QUEUED")]);
     await vi.advanceTimersByTimeAsync(50);
 
-    b.resolve(task("b", "FAILED"));
-    a.reject(new Error("网络断开"));
-    await vi.advanceTimersByTimeAsync(0);
-
     expect(entries.find(({ task }) => task.id === "a")).toMatchObject({
-      task: { status: "RUNNING", stage: "GENERATE" }, queryError: "网络断开",
+      task: { status: "RUNNING", stage: "GENERATE" }, queryError: "暂时无法读取该任务。",
     });
     expect(entries.find(({ task }) => task.id === "b")).toMatchObject({
       task: { status: "FAILED", errorMessage: "模拟失败" }, queryError: null,
     });
 
-    read.mockResolvedValueOnce({ ...task("a", "SUCCEEDED"), resultUrl: "/api/tasks/a/result" });
     feed.retry("a");
     await vi.advanceTimersByTimeAsync(0);
     expect(entries.find(({ task }) => task.id === "a")).toMatchObject({
       task: { status: "SUCCEEDED", resultUrl: "/api/tasks/a/result" }, queryError: null,
     });
     await vi.advanceTimersByTimeAsync(500);
-    expect(read.mock.calls.map(([id]) => id).sort()).toEqual(["a", "a", "b"]);
+    expect(read.mock.calls.map(([ids]) => ids)).toEqual([["a", "b"], ["a"]]);
+  });
+
+  it("tracks off-page tasks in bounded batches and shows their latest status when loaded", async () => {
+    const read = vi.fn(async (ids: string[]) => ids.map((id) => task(id, "SUCCEEDED")));
+    const onChange = vi.fn();
+    const feed = createTaskFeed(read, onChange, 50);
+    const older = Array.from({ length: 50 }, (_, index) => task("old-" + index));
+    feed.add([task("visible")]);
+    feed.add(older, false);
+    await vi.advanceTimersByTimeAsync(50);
+    expect(read.mock.calls.map(([ids]) => ids.length)).toEqual([50, 1]);
+    expect(onChange.mock.lastCall?.[0].map(({ task }: TaskEntry) => task.id)).toEqual(["visible"]);
+
+    feed.add([older[0]]);
+    expect(onChange.mock.lastCall?.[0].find(({ task }: TaskEntry) => task.id === "old-0")?.task.status)
+      .toBe("SUCCEEDED");
+    await vi.advanceTimersByTimeAsync(500);
+    expect(read).toHaveBeenCalledTimes(2);
   });
 
   it("aborts in-flight reads and ignores late responses after disposal", async () => {
-    const response = pending<Task>();
-    const read = vi.fn<(id: string, signal: AbortSignal) => Promise<Task>>(() => response.promise);
+    let complete!: (tasks: Task[]) => void;
+    const response = new Promise<Task[]>((resolve) => { complete = resolve; });
+    const read = vi.fn<(ids: string[], signal: AbortSignal) => Promise<Task[]>>(() => response);
     const onChange = vi.fn();
     const feed = createTaskFeed(read, onChange, 50);
     feed.add([task("old")]);
@@ -61,18 +68,9 @@ describe("task feed", () => {
     feed.dispose();
 
     expect(read.mock.calls[0][1].aborted).toBe(true);
-    response.resolve(task("old", "SUCCEEDED"));
+    complete([task("old", "SUCCEEDED")]);
     await vi.advanceTimersByTimeAsync(1000);
     expect(onChange).toHaveBeenCalledTimes(1);
     expect(read).toHaveBeenCalledTimes(1);
-  });
-
-  it("does not regress when an older history snapshot arrives", async () => {
-    const onChange = vi.fn();
-    const feed = createTaskFeed(async () => task("a", "SUCCEEDED"), onChange, 50);
-    feed.add([task("a")]);
-    await vi.advanceTimersByTimeAsync(50);
-    feed.add([task("a", "QUEUED")]);
-    expect(onChange.mock.lastCall?.[0][0].task.status).toBe("SUCCEEDED");
   });
 });

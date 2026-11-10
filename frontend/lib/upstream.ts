@@ -3,7 +3,7 @@ export async function fromJava(request: Request, path: string): Promise<Response
   const url = new URL(path, base);
   url.search = new URL(request.url).search;
   const headers = new Headers();
-  for (const name of ["content-type", "cookie", "x-studio-request"]) {
+  for (const name of ["content-type", "cookie", "x-studio-request", "x-studio-account"]) {
     const value = request.headers.get(name);
     if (value) headers.set(name, value);
   }
