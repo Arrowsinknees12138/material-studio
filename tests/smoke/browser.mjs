@@ -3,11 +3,10 @@ import { setTimeout as sleep } from "node:timers/promises";
 import { chromium } from "playwright";
 
 const baseURL = "http://web:3000";
-const browser = await chromium.launch({
-  args: ["--unsafely-treat-insecure-origin-as-secure=" + baseURL],
-});
+const browser = await chromium.launch();
 const page = await browser.newPage({ baseURL, viewport: { width: 320, height: 740 } });
 page.setDefaultTimeout(12000);
+page.on("pageerror", (error) => console.error(error));
 
 function deferred() {
   let resolve;
@@ -109,7 +108,11 @@ try {
 
   await select(choose, "last.jpg");
   await preview.waitFor();
+  const accepted = page.waitForResponse((response) =>
+    new URL(response.url()).pathname === "/api/tasks" && response.request().method() === "POST");
   await submit.press("Enter");
+  const submission = await accepted;
+  assert.equal(submission.status(), 202, await submission.text());
   await page.getByText("任务已受理，可以在记录中查看进度。", { exact: true }).waitFor();
   const result = page.getByRole("button", { name: "预览沙丘日记的结果" }).first();
   await result.waitFor({ timeout: 25000 });
