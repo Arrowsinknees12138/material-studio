@@ -24,6 +24,7 @@ export function createTaskFeed(read: ReadTasks, onChange: (entries: TaskEntry[])
   const entries = new Map<string, TaskEntry>();
   const visible = new Set<string>();
   const active = new Set<string>();
+  const queuedRetries = new Set<string>();
   let timer: ReturnType<typeof setTimeout> | undefined;
   let request: AbortController | undefined;
   let disposed = false;
@@ -84,7 +85,10 @@ export function createTaskFeed(read: ReadTasks, onChange: (entries: TaskEntry[])
       }
     } finally {
       request = undefined;
-      schedule();
+      const retries = [...queuedRetries].filter((id) => active.has(id));
+      queuedRetries.clear();
+      if (!disposed && retries.length) void poll(retries);
+      else schedule();
     }
   }
 
@@ -99,11 +103,14 @@ export function createTaskFeed(read: ReadTasks, onChange: (entries: TaskEntry[])
       schedule();
     },
     retry(id: string) {
-      if (active.has(id)) void poll([id]);
+      if (disposed || !active.has(id)) return;
+      if (request) queuedRetries.add(id);
+      else void poll([id]);
     },
     dispose() {
       disposed = true;
       clearTimeout(timer);
+      queuedRetries.clear();
       request?.abort();
     },
   };

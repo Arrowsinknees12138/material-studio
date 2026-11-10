@@ -105,7 +105,7 @@ describe("task feed", () => {
       task.status === "SUCCEEDED" && queryError === null)).toHaveLength(50);
   });
 
-  it("tracks a task accepted during a pending poll without overlapping update requests", async () => {
+  it("runs queued manual retries as soon as the current poll ends", async () => {
     const pending = Promise.withResolvers<Task[]>();
     const read = vi.fn<(ids: string[], signal: AbortSignal) => Promise<Task[]>>()
       .mockReturnValueOnce(pending.promise)
@@ -118,12 +118,13 @@ describe("task feed", () => {
     const added = task("new", "QUEUED");
     feed.add([added]);
     feed.retry("new");
+    feed.retry("new");
     await vi.advanceTimersByTimeAsync(500);
     expect(read).toHaveBeenCalledTimes(1);
     expect(onChange.mock.lastCall?.[0]).toContainEqual({ task: added, queryError: null });
 
     pending.resolve([task("old", "SUCCEEDED")]);
-    await vi.advanceTimersByTimeAsync(500);
+    await vi.advanceTimersByTimeAsync(0);
     expect(read.mock.calls.map(([ids]) => ids)).toEqual([["old"], ["new"]]);
     expect(onChange.mock.lastCall?.[0]).toContainEqual({ task: task("new", "SUCCEEDED"), queryError: null });
   });
