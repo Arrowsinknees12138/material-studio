@@ -9,7 +9,19 @@ import org.apache.ibatis.annotations.Select;
 import org.apache.ibatis.annotations.Update;
 
 enum TaskStatus { QUEUED, RUNNING, SUCCEEDED, FAILED }
-enum TaskStage { CHECK_INPUTS, GENERATE, FINALIZE }
+enum TaskStage {
+    CHECK_INPUTS("素材检查"), GENERATE("模拟生成"), FINALIZE("结果整理");
+
+    private final String label;
+
+    TaskStage(String label) {
+        this.label = label;
+    }
+
+    String label() {
+        return label;
+    }
+}
 
 record Task(String id, long ownerId, String templateId, String templateTitle, String requestId,
             TaskStatus status, TaskStage stage, Instant createdAt, Instant completedAt,
@@ -19,19 +31,15 @@ record Task(String id, long ownerId, String templateId, String templateTitle, St
                 resultKey == null ? null : "/api/tasks/" + id + "/result", errorMessage);
     }
 
-    int delay(TaskStage currentStage) {
-        return switch (currentStage) {
-            case CHECK_INPUTS -> checkMs;
-            case GENERATE -> generateMs;
-            case FINALIZE -> finalizeMs;
-        };
-    }
 }
 
 record TaskView(String id, String templateId, String templateTitle, TaskStatus status, TaskStage stage,
                 Instant createdAt, Instant completedAt, String resultUrl, String errorMessage) {}
 record NewTask(String id, long ownerId, String templateId, String requestId, TaskStage failAt,
                int checkMs, int generateMs, int finalizeMs) {}
+
+record WorkItem(String id, String templateId, TaskStage stage, TaskStage failAt,
+                int checkMs, int generateMs, int finalizeMs, String generatedSample) {}
 
 @Mapper
 interface TaskMapper {
@@ -68,31 +76,34 @@ interface TaskMapper {
     @Insert("INSERT INTO task_assets(task_id, slot_index, asset_id) VALUES (#{taskId}, #{slot}, #{assetId})")
     void link(String taskId, int slot, String assetId);
 
-    @Select(SELECT_TASK + " WHERE t.status = 'QUEUED' ORDER BY t.created_at, t.id LIMIT 1")
-    Task nextQueued();
-
-    @Update("UPDATE tasks SET status = 'RUNNING', stage = 'CHECK_INPUTS' WHERE id = #{id} AND status = 'QUEUED'")
-    int claim(String id);
-
-    @Update("UPDATE tasks SET stage = #{next} WHERE id = #{id} AND status = 'RUNNING' AND stage = #{previous}")
-    int advance(String id, TaskStage previous, TaskStage next);
+    @Select("""
+        SELECT id, template_id, stage, fail_at, check_ms, generate_ms, finalize_ms, generated_sample
+        FROM tasks
+        WHERE next_run_at <= CURRENT_TIMESTAMP(3) AND status IN ('QUEUED', 'RUNNING')
+        ORDER BY next_run_at, created_at, id
+        LIMIT 1 FOR UPDATE SKIP LOCKED
+        """)
+    WorkItem lockNextDue();
 
     @Update("""
-        UPDATE tasks SET status = 'SUCCEEDED', result_key = #{key}, completed_at = CURRENT_TIMESTAMP(3)
-        WHERE id = #{id} AND status = 'RUNNING' AND stage = 'FINALIZE'
+        UPDATE tasks
+        SET status = 'RUNNING', stage = #{stage}, generated_sample = #{sample, jdbcType=VARCHAR},
+            next_run_at = TIMESTAMPADD(MICROSECOND, #{delayMs} * 1000, CURRENT_TIMESTAMP(3))
+        WHERE id = #{id}
         """)
-    int succeed(String id, String key);
+    void schedule(String id, TaskStage stage, int delayMs, String sample);
 
     @Update("""
-        UPDATE tasks SET status = 'FAILED', error_message = #{message}, completed_at = CURRENT_TIMESTAMP(3)
-        WHERE id = #{id} AND status = 'RUNNING'
+        UPDATE tasks SET status = 'SUCCEEDED', result_key = #{key}, completed_at = CURRENT_TIMESTAMP(3),
+                         next_run_at = NULL
+        WHERE id = #{id}
         """)
-    int fail(String id, String message);
+    void succeed(String id, String key);
 
     @Update("""
-        UPDATE tasks SET status = 'FAILED', error_message = '后台服务重启，制作被中断。',
-                         completed_at = CURRENT_TIMESTAMP(3)
-        WHERE status = 'RUNNING'
+        UPDATE tasks SET status = 'FAILED', error_message = #{message}, completed_at = CURRENT_TIMESTAMP(3),
+                         next_run_at = NULL
+        WHERE id = #{id}
         """)
-    int failInterrupted();
+    void fail(String id, String message);
 }

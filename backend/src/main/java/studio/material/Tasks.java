@@ -2,6 +2,8 @@ package studio.material;
 
 import java.util.HashSet;
 import java.util.List;
+import java.util.Locale;
+import java.util.Objects;
 import java.util.UUID;
 
 import jakarta.servlet.http.HttpServletRequest;
@@ -63,12 +65,17 @@ class Tasks {
         }
         Integer delay = input.delayMs() == null ? null : delay(input.delayMs());
         Template template = catalog.require(input.templateId());
-        List<String> ids = input.assetIds();
-        if (ids == null || ids.size() != template.requiredImageCount() || new HashSet<>(ids).size() != ids.size()) {
+        List<String> requested = input.assetIds();
+        if (requested == null || requested.size() != template.requiredImageCount()
+                || requested.stream().anyMatch(Objects::isNull)) {
+            throw badRequest("请为每个槽位上传图片。");
+        }
+        List<String> ids = requested.stream().map(id -> id.toLowerCase(Locale.ROOT)).toList();
+        if (new HashSet<>(ids).size() != ids.size()) {
             throw badRequest("请为每个槽位上传图片，素材记录不能重复。");
         }
-        for (String id : ids) {
-            Asset asset = id == null ? null : assets.findOwned(id, ownerId);
+        for (String id : ids.stream().sorted().toList()) {
+            Asset asset = assets.lockOwnedReady(id, ownerId);
             if (asset == null || !template.id().equals(asset.templateId()) ||
                     !template.view().acceptedMimeTypes().contains(asset.contentType())
                     || asset.byteSize() > template.maxFileSizeBytes()) {

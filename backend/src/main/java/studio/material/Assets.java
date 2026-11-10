@@ -2,6 +2,7 @@ package studio.material;
 
 import java.io.IOException;
 import java.io.InputStream;
+import java.io.UncheckedIOException;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.StandardCopyOption;
@@ -13,9 +14,11 @@ import javax.imageio.ImageReader;
 import javax.imageio.stream.ImageInputStream;
 
 import jakarta.servlet.http.HttpServletRequest;
+import org.apache.ibatis.annotations.Delete;
 import org.apache.ibatis.annotations.Insert;
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Select;
+import org.apache.ibatis.annotations.Update;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.ClassPathResource;
 import org.springframework.core.io.FileSystemResource;
@@ -24,6 +27,8 @@ import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
@@ -39,12 +44,28 @@ record Asset(String id, long ownerId, String templateId, String storageKey, Stri
         return new AssetView(id, "/api/assets/" + id + "/content", contentType, byteSize);
     }
 }
+record AssetFile(String id, String storageKey) {}
+
 record AssetView(String assetId, String previewUrl, String contentType, long byteSize) {}
 
 @Mapper
 interface AssetMapper {
-    @Select("SELECT id, owner_id, template_id, storage_key, content_type, byte_size FROM assets WHERE id = #{id} AND owner_id = #{ownerId}")
+    String OWNED_READY = """
+        SELECT id, owner_id, template_id, storage_key, content_type, byte_size
+        FROM assets WHERE id = #{id} AND owner_id = #{ownerId} AND state = 'READY'
+        """;
+
+    @Select(OWNED_READY)
     Asset findOwned(String id, long ownerId);
+
+    @Select(OWNED_READY + " FOR SHARE")
+    Asset lockOwnedReady(String id, long ownerId);
+
+    @Select("SELECT id FROM assets WHERE id = #{id} AND state = 'UPLOADING' FOR UPDATE")
+    String lockUpload(String id);
+
+    @Update("UPDATE assets SET state = 'READY', created_at = CURRENT_TIMESTAMP(3) WHERE id = #{id}")
+    void finishUpload(String id);
 
     @Select("""
         SELECT a.id, a.owner_id, a.template_id, a.storage_key, a.content_type, a.byte_size
@@ -54,10 +75,37 @@ interface AssetMapper {
     List<Asset> findForTask(String taskId);
 
     @Insert("""
-        INSERT INTO assets(id, owner_id, template_id, storage_key, content_type, byte_size)
-        VALUES (#{id}, #{ownerId}, #{templateId}, #{storageKey}, #{contentType}, #{byteSize})
+        INSERT INTO assets(id, owner_id, template_id, storage_key, content_type, byte_size, state)
+        VALUES (#{id}, #{ownerId}, #{templateId}, #{storageKey}, #{contentType}, #{byteSize}, 'UPLOADING')
         """)
     void insert(Asset asset);
+
+    @Select("""
+        SELECT a.id, a.storage_key
+        FROM assets a
+        WHERE a.state IN ('READY', 'UPLOADING')
+          AND a.created_at <= TIMESTAMPADD(SECOND, -#{retentionSeconds}, CURRENT_TIMESTAMP(3))
+          AND NOT EXISTS (SELECT 1 FROM task_assets link WHERE link.asset_id = a.id)
+        ORDER BY a.state, a.created_at, a.id
+        LIMIT 100 FOR UPDATE OF a SKIP LOCKED
+        """)
+    List<AssetFile> lockExpiredUnreferenced(long retentionSeconds);
+
+    @Update("""
+        UPDATE assets a SET state = 'PURGING'
+        WHERE a.id = #{id} AND a.state IN ('READY', 'UPLOADING')
+          AND NOT EXISTS (SELECT 1 FROM task_assets link WHERE link.asset_id = a.id)
+        """)
+    void markPurging(String id);
+
+    @Select("""
+        SELECT id, storage_key FROM assets WHERE state = 'PURGING'
+        ORDER BY created_at, id LIMIT 100
+        """)
+    List<AssetFile> pendingPurge();
+
+    @Delete("DELETE FROM assets WHERE id = #{id} AND state = 'PURGING'")
+    void deletePurged(String id);
 }
 
 @Service
@@ -71,7 +119,7 @@ class FileStorage {
     void save(String key, InputStream source) throws IOException {
         Path target = resolve(key);
         Files.createDirectories(target.getParent());
-        Path temp = Files.createTempFile(target.getParent(), "upload-", ".tmp");
+        Path temp = resolve(key + ".part");
         try {
             Files.copy(source, temp, StandardCopyOption.REPLACE_EXISTING);
             Files.move(temp, target, StandardCopyOption.ATOMIC_MOVE, StandardCopyOption.REPLACE_EXISTING);
@@ -104,6 +152,7 @@ class FileStorage {
     }
 
     void delete(String key) throws IOException {
+        Files.deleteIfExists(resolve(key + ".part"));
         Files.deleteIfExists(resolve(key));
     }
 
@@ -123,10 +172,13 @@ class Assets {
     private final Catalog catalog;
     private final FileStorage storage;
 
-    Assets(AssetMapper assets, Catalog catalog, FileStorage storage) {
+    private final TransactionTemplate uploadTransaction;
+
+    Assets(AssetMapper assets, Catalog catalog, FileStorage storage, PlatformTransactionManager transactions) {
         this.assets = assets;
         this.catalog = catalog;
         this.storage = storage;
+        this.uploadTransaction = new TransactionTemplate(transactions);
     }
 
     AssetView upload(long ownerId, String templateId, MultipartFile file) throws IOException {
@@ -141,18 +193,22 @@ class Assets {
         String id = UUID.randomUUID().toString();
         String key = "uploads/" + id + (type.equals("image/png") ? ".png" : ".jpg");
         Asset asset = new Asset(id, ownerId, templateId, key, type, file.getSize());
-        try (InputStream input = file.getInputStream()) {
-            storage.save(key, input);
-        }
+        // Commit the upload record first so an interrupted file write remains discoverable.
+        assets.insert(asset);
         try {
-            assets.insert(asset);
-        } catch (RuntimeException error) {
-            try {
-                storage.delete(key);
-            } catch (IOException cleanupError) {
-                error.addSuppressed(cleanupError);
-            }
-            throw error;
+            uploadTransaction.executeWithoutResult(status -> {
+                if (assets.lockUpload(id) == null) {
+                    throw new ResponseStatusException(HttpStatus.CONFLICT, "上传已过期，请重新选择图片。");
+                }
+                try (InputStream input = file.getInputStream()) {
+                    storage.save(key, input);
+                } catch (IOException error) {
+                    throw new UncheckedIOException(error);
+                }
+                assets.finishUpload(id);
+            });
+        } catch (UncheckedIOException error) {
+            throw error.getCause();
         }
         return asset.view();
     }

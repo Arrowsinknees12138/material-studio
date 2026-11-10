@@ -3,12 +3,14 @@ package studio.material;
 import java.io.IOException;
 import java.util.List;
 
-import jakarta.annotation.PostConstruct;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.boot.sql.init.dependency.DependsOnDatabaseInitialization;
+import org.springframework.dao.DataAccessException;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
+import org.springframework.transaction.annotation.Isolation;
+import org.springframework.transaction.annotation.Transactional;
 
 @Component
 @DependsOnDatabaseInitialization
@@ -22,39 +24,42 @@ class TaskWorker {
         this.steps = steps;
     }
 
-    @PostConstruct
-    void recoverInterrupted() {
-        tasks.failInterrupted();
-    }
-
     @Scheduled(fixedDelayString = "${studio.worker-delay-ms}")
-    void processNext() {
-        Task task = tasks.nextQueued();
-        if (task == null || tasks.claim(task.id()) != 1) {
+    @Transactional(isolation = Isolation.READ_COMMITTED)
+    public void processNext() {
+        WorkItem item = tasks.lockNextDue();
+        if (item == null) {
             return;
         }
-        TaskStage stage = TaskStage.CHECK_INPUTS;
+        TaskStage stage = item.stage();
+        if (stage == null) {
+            tasks.schedule(item.id(), TaskStage.CHECK_INPUTS, item.checkMs(), null);
+            return;
+        }
+
         try {
-            steps.checkInputs(task);
-            if (tasks.advance(task.id(), stage, TaskStage.GENERATE) != 1) {
-                return;
+            if (item.failAt() == stage) {
+                throw new StepFailure(stage.label() + "模拟失败。");
             }
-            stage = TaskStage.GENERATE;
-            String sample = steps.generate(task);
-            if (tasks.advance(task.id(), stage, TaskStage.FINALIZE) != 1) {
-                return;
+            switch (stage) {
+                case CHECK_INPUTS -> {
+                    steps.checkInputs(item);
+                    tasks.schedule(item.id(), TaskStage.GENERATE, item.generateMs(), null);
+                }
+                case GENERATE -> {
+                    String sample = steps.generate(item);
+                    tasks.schedule(item.id(), TaskStage.FINALIZE, item.finalizeMs(), sample);
+                }
+                case FINALIZE -> tasks.succeed(item.id(), steps.finalizeResult(item));
             }
-            stage = TaskStage.FINALIZE;
-            String resultKey = steps.finalizeResult(task, sample);
-            tasks.succeed(task.id(), resultKey);
-        } catch (InterruptedException interrupted) {
-            Thread.currentThread().interrupt();
-            tasks.fail(task.id(), "后台服务中断了制作。");
+        } catch (DataAccessException error) {
+            // A database error rolls back this checkpoint so it can be picked up again.
+            throw error;
         } catch (StepFailure error) {
-            tasks.fail(task.id(), error.getMessage());
-        } catch (Exception error) {
-            log.error("Task {} failed in {}", task.id(), stage, error);
-            tasks.fail(task.id(), "制作步骤遇到异常，未能完成。");
+            tasks.fail(item.id(), error.getMessage());
+        } catch (IOException | RuntimeException error) {
+            log.error("Task {} failed in {}", item.id(), stage, error);
+            tasks.fail(item.id(), "制作步骤遇到异常，未能完成。");
         }
     }
 }
@@ -71,31 +76,21 @@ class TaskSteps {
         this.storage = storage;
     }
 
-    void checkInputs(Task task) throws InterruptedException {
-        simulate(task, TaskStage.CHECK_INPUTS, "素材检查");
-        Template template = catalog.require(task.templateId());
-        List<Asset> linkedAssets = assets.findForTask(task.id());
+    void checkInputs(WorkItem item) {
+        Template template = catalog.require(item.templateId());
+        List<Asset> linkedAssets = assets.findForTask(item.id());
         if (linkedAssets.size() != template.requiredImageCount()
                 || linkedAssets.stream().anyMatch(asset -> !storage.readable(asset.storageKey()))) {
             throw new StepFailure("任务引用的图片文件缺失或无法读取。");
         }
     }
 
-    String generate(Task task) throws InterruptedException {
-        simulate(task, TaskStage.GENERATE, "模拟生成");
-        return catalog.require(task.templateId()).sampleResult();
+    String generate(WorkItem item) {
+        return catalog.require(item.templateId()).sampleResult();
     }
 
-    String finalizeResult(Task task, String sample) throws InterruptedException, IOException {
-        simulate(task, TaskStage.FINALIZE, "结果整理");
-        return storage.saveResult(task.id(), sample);
-    }
-
-    private void simulate(Task task, TaskStage stage, String label) throws InterruptedException {
-        Thread.sleep(task.delay(stage));
-        if (task.failAt() == stage) {
-            throw new StepFailure(label + "模拟失败。");
-        }
+    String finalizeResult(WorkItem item) throws IOException {
+        return storage.saveResult(item.id(), item.generatedSample());
     }
 }
 

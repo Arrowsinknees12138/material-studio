@@ -3,6 +3,13 @@ spring:
     url: ${DATABASE_URL:jdbc:mysql://localhost:3306/material_studio?connectionTimeZone=UTC&forceConnectionTimeZoneToSession=true}
     username: ${DATABASE_USER:studio}
     password: ${DATABASE_PASSWORD:studio-local}
+  session:
+    jdbc:
+      initialize-schema: never
+  task:
+    scheduling:
+      pool:
+        size: 2
   servlet:
     multipart:
       max-file-size: 5MB
@@ -27,4 +34,7 @@ studio:
     check-ms: ${SIM_CHECK_MS:2000}
     generate-ms: ${SIM_GENERATE_MS:5000}
     finalize-ms: ${SIM_FINALIZE_MS:2000}
+  assets:
+    retention-seconds: ${ASSET_RETENTION_SECONDS:86400}
+    cleanup-interval-ms: ${ASSET_CLEANUP_INTERVAL_MS:60000}
   worker-delay-ms: ${WORKER_DELAY_MS:400}

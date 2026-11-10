@@ -1,14 +1,12 @@
 package studio.material;
 
-import java.time.Instant;
-
-import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.params.ParameterizedTest;
 import org.junit.jupiter.params.provider.EnumSource;
 import org.mockito.InOrder;
+import org.springframework.dao.TransientDataAccessResourceException;
 
-import static org.mockito.ArgumentMatchers.any;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.mockito.ArgumentMatchers.anyString;
 import static org.mockito.Mockito.*;
 
@@ -16,62 +14,82 @@ class TaskWorkerTest {
     private final TaskMapper tasks = mock(TaskMapper.class);
     private final TaskSteps steps = mock(TaskSteps.class);
     private final TaskWorker worker = new TaskWorker(tasks, steps);
-    private final Task task = new Task("task-1", 1, "coast", "海岸明信片", "request-1", TaskStatus.QUEUED,
-            null, Instant.EPOCH, null, null, null, null, 0, 0, 0);
-
-    @BeforeEach
-    void queueTask() throws Exception {
-        when(tasks.nextQueued()).thenReturn(task);
-        when(tasks.claim(task.id())).thenReturn(1);
-        when(tasks.advance(task.id(), TaskStage.CHECK_INPUTS, TaskStage.GENERATE)).thenReturn(1);
-        when(tasks.advance(task.id(), TaskStage.GENERATE, TaskStage.FINALIZE)).thenReturn(1);
-        when(steps.generate(task)).thenReturn("coast.jpg");
-        when(steps.finalizeResult(task, "coast.jpg")).thenReturn("results/task-1.jpg");
-    }
 
     @Test
-    void savesEachStageBeforeExecutingItAndOnlySucceedsAfterStoringTheImage() throws Exception {
-        worker.processNext();
+    void schedulesEachStageAndSavesGeneratedSampleBeforeFinalization() throws Exception {
+        WorkItem queued = item(null, null, null);
+        WorkItem check = item(TaskStage.CHECK_INPUTS, null, null);
+        WorkItem generate = item(TaskStage.GENERATE, null, null);
+        WorkItem finalize = item(TaskStage.FINALIZE, null, "coast.jpg");
+        when(tasks.lockNextDue()).thenReturn(queued, check, generate, finalize);
+        when(steps.generate(generate)).thenReturn("coast.jpg");
+        when(steps.finalizeResult(finalize)).thenReturn("results/task-1.jpg");
+
+        for (int stage = 0; stage < 4; stage++) {
+            worker.processNext();
+        }
 
         InOrder order = inOrder(tasks, steps);
-        order.verify(tasks).claim(task.id());
-        order.verify(steps).checkInputs(task);
-        order.verify(tasks).advance(task.id(), TaskStage.CHECK_INPUTS, TaskStage.GENERATE);
-        order.verify(steps).generate(task);
-        order.verify(tasks).advance(task.id(), TaskStage.GENERATE, TaskStage.FINALIZE);
-        order.verify(steps).finalizeResult(task, "coast.jpg");
-        order.verify(tasks).succeed(task.id(), "results/task-1.jpg");
-        verify(tasks, never()).fail(anyString(), anyString());
+        order.verify(tasks).schedule("task-1", TaskStage.CHECK_INPUTS, 10, null);
+        order.verify(steps).checkInputs(check);
+        order.verify(tasks).schedule("task-1", TaskStage.GENERATE, 20, null);
+        order.verify(steps).generate(generate);
+        order.verify(tasks).schedule("task-1", TaskStage.FINALIZE, 30, "coast.jpg");
+        order.verify(steps).finalizeResult(finalize);
+        order.verify(tasks).succeed("task-1", "results/task-1.jpg");
     }
 
     @ParameterizedTest
     @EnumSource(TaskStage.class)
-    void failurePreventsAllLaterStages(TaskStage stage) throws Exception {
-        StepFailure failure = new StepFailure("模拟失败");
-        switch (stage) {
-            case CHECK_INPUTS -> doThrow(failure).when(steps).checkInputs(task);
-            case GENERATE -> when(steps.generate(task)).thenThrow(failure);
-            case FINALIZE -> when(steps.finalizeResult(task, "coast.jpg")).thenThrow(failure);
-        }
+    void simulatedFailureStopsAtTheCurrentStage(TaskStage stage) {
+        when(tasks.lockNextDue()).thenReturn(item(stage, stage, "coast.jpg"));
 
         worker.processNext();
 
-        verify(tasks).fail(task.id(), "模拟失败");
-        verify(tasks, never()).succeed(anyString(), anyString());
-        if (stage == TaskStage.CHECK_INPUTS) {
-            verify(tasks, never()).advance(anyString(), any(), any());
-            verify(steps, never()).generate(task);
+        verify(tasks).lockNextDue();
+        verify(tasks).fail("task-1", stage.label() + "模拟失败。");
+        verifyNoMoreInteractions(tasks);
+        verifyNoInteractions(steps);
+    }
+
+    @ParameterizedTest
+    @EnumSource(TaskStage.class)
+    void freshWorkerResumesFromThePersistedStage(TaskStage stage) throws Exception {
+        WorkItem persisted = item(stage, null, "coast.jpg");
+        when(tasks.lockNextDue()).thenReturn(persisted);
+
+        new TaskWorker(tasks, steps).processNext();
+
+        switch (stage) {
+            case CHECK_INPUTS -> verify(steps).checkInputs(persisted);
+            case GENERATE -> verify(steps).generate(persisted);
+            case FINALIZE -> verify(steps).finalizeResult(persisted);
         }
-        if (stage != TaskStage.FINALIZE) {
-            verify(tasks, never()).advance(task.id(), TaskStage.GENERATE, TaskStage.FINALIZE);
-            verify(steps, never()).finalizeResult(any(), anyString());
-        }
+        verifyNoMoreInteractions(steps);
     }
 
     @Test
-    void skipsWorkIfClaimWasLost() {
-        when(tasks.claim(task.id())).thenReturn(0);
+    void databaseErrorsLeaveTheCheckpointForRetry() {
+        WorkItem check = item(TaskStage.CHECK_INPUTS, null, null);
+        when(tasks.lockNextDue()).thenReturn(check);
+        doThrow(new TransientDataAccessResourceException("connection interrupted"))
+                .when(steps).checkInputs(check);
+
+        assertThrows(TransientDataAccessResourceException.class, worker::processNext);
+
+        verify(tasks, never()).fail(anyString(), anyString());
+        verify(tasks).lockNextDue();
+        verifyNoMoreInteractions(tasks);
+    }
+
+    @Test
+    void doesNoWorkWhenNoCheckpointIsDue() {
         worker.processNext();
+
         verifyNoInteractions(steps);
+    }
+
+    private WorkItem item(TaskStage stage, TaskStage failAt, String sample) {
+        return new WorkItem("task-1", "coast", stage, failAt, 10, 20, 30, sample);
     }
 }

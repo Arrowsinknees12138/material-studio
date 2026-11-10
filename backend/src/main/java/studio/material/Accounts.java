@@ -1,5 +1,6 @@
 package studio.material;
 
+import java.io.Serializable;
 import java.util.Map;
 import java.util.Set;
 
@@ -22,6 +23,7 @@ import org.springframework.web.servlet.config.annotation.InterceptorRegistry;
 import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 record User(long id, String username, String displayName, String passwordHash) {}
+record SessionUser(long id, String username, String displayName) implements Serializable {}
 record UserView(String username, String displayName) {}
 record Login(String username, String password) {}
 
@@ -49,17 +51,18 @@ class Accounts {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "账号或密码错误。");
         }
         logout(request);
-        request.getSession(true).setAttribute(SESSION_USER, user);
+        request.getSession(true).setAttribute(SESSION_USER,
+                new SessionUser(user.id(), user.username(), user.displayName()));
         return new UserView(user.username(), user.displayName());
     }
 
-    User current(HttpServletRequest request) {
+    SessionUser current(HttpServletRequest request) {
         HttpSession session = request.getSession(false);
-        return session == null ? null : (User) session.getAttribute(SESSION_USER);
+        return session == null ? null : (SessionUser) session.getAttribute(SESSION_USER);
     }
 
     long requireOwner(HttpServletRequest request) {
-        User user = current(request);
+        SessionUser user = current(request);
         if (user == null) {
             throw new ResponseStatusException(HttpStatus.UNAUTHORIZED, "请先登录演示账号。");
         }
@@ -85,7 +88,7 @@ class SessionController {
 
     @GetMapping
     Map<String, UserView> current(HttpServletRequest request) {
-        User user = accounts.current(request);
+        SessionUser user = accounts.current(request);
         return user == null ? java.util.Collections.singletonMap("user", null)
                 : Map.of("user", new UserView(user.username(), user.displayName()));
     }
