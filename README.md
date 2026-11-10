@@ -118,7 +118,7 @@ cd backend
 | 方法和路径 | 请求 | 响应 |
 | --- | --- | --- |
 | `GET /api/templates` | 可选 `category` | `{categories, templates}` |
-| `GET /api/templates/{id}` | 模板 ID | `{id,title,category,description,coverUrl,requiredImageCount,acceptedMimeTypes,maxFileSizeBytes}` |
+| `GET /api/templates/{id}` | 模板 ID | `{id,title,category,description,coverUrl,requiredImageCount,acceptedMimeTypes,maxFileSizeBytes,maxImagePixels}` |
 | `GET /api/session` | Cookie 可省略 | `{user: {username,displayName} \| null}` |
 | `POST /api/session` | `{username,password}` | `{user}`，同时设置会话 Cookie |
 | `POST /api/session/logout` | Cookie | `204` |
@@ -134,6 +134,8 @@ cd backend
 任务对象字段为 `id`、`templateId`、`templateTitle`、`status`、`stage`、`createdAt`、`completedAt`、`resultUrl`、`errorMessage`。时间以 UTC ISO 8601 返回。提交的 `requestId` 为 UUID，同一用户重复提交同一个 `requestId` 时返回原任务。成功受理一条任务后，下一次制作应使用新的 `requestId`。
 
 Java 使用 BCrypt 校验演示账号，身份保存在由 Spring Session JDBC 管理的 MySQL 会话。Cookie 设置 `HttpOnly` 和 `SameSite=Lax`。Java 使用会话用户过滤任务、素材和结果。网页跨标签页切换账号时重新读取会话，并为任务和上传请求附上页面显示的账号，以便 Java 拒绝旧页面发出的请求。素材失效时，提交接口通过 `unavailableAssetIds` 标明需要重传的槽位。跨账号读取资源返回 `404`，登录失效时私有接口返回 `401`。浏览器按文件头识别 JPEG 或 PNG，即使系统没有提供 MIME 也可上传。Java 按模板校验大小并解码校验内容。模拟器读取已保存的文件，上传预览同样来自服务端。
+
+每张图片最多 5 MB 和 2400 万像素。制作页从模板接口读取限制，Java 在保存素材前检查。结果图片读取失败时可在预览弹窗中重新加载，任务仍显示「制作成功」。
 
 ## 任务执行与前端状态
 
@@ -165,10 +167,10 @@ docker compose ps api
 ## 交付状态、边界和回滚
 
 - 已实现模板筛选、上传校验、模拟任务、失败注入、并行跟踪、刷新恢复、结果预览、身份隔离和容器配置。
-- 首版从创建空仓库到实现与本地验收约 20 分钟，含依赖下载和容器构建。
+- 首版从创建空仓库到实现与本地验收约 20 分钟，含依赖下载和容器构建。后续投入包括任务断点续作、跨实例和跨标签页会话、素材清理、历史分页、容器回归和多轮验收修复。后续工作未单独计时。
 - 当前版本使用预置图片演示结果。阶段内发生中断时，以整阶段为单位重做。任务历史及其关联素材按原记录保留，自动清理范围是数据库中已登记且过期的未引用上传。旧版本发生进程中断时可能留下未登记文件，这些文件不在自动清理范围内。
-- 部署使用验收 commit 构建镜像，保留数据库卷和图片卷，先检查数据库和 Java 健康状态，再走一次上传、提交和预览。从旧版升级时，先停止所有旧版 Java 实例，再备份两类卷并构建新版本，由 Flyway 执行 V3 和 V4。旧版内存会话需要重新登录，原任务和素材记录继续使用。若新版本涉及数据库迁移且旧版本不兼容，停服务后恢复同一时间点的备份再启动旧版本。
-- 仓库交付时用 `git rev-parse HEAD` 取得验收 commit，并随仓库链接一同提交。压缩交付保留 CI 和锁文件，排除 `node_modules/`、`.next/`、`target/` 和本地数据。
+- 部署使用验收 commit 构建镜像，保留数据库卷和图片卷，先检查数据库和 Java 健康状态，再走一次上传、提交和预览。从旧版升级时，先停止所有旧版 Java 实例，再备份两类卷并构建新版本。Flyway 自动执行尚未应用的迁移，当前到 V5，其中 V3 保存任务检查点并支持素材清理，V4 新增共享会话表，V5 新增历史查询索引。旧版内存会话需要重新登录，原任务和素材记录继续使用。若旧版与升级后的库不兼容，停服务后恢复升级前同一时间点的数据库卷和图片卷，再以旧 commit 构建并启动服务，检查原历史与结果。
+- 仓库交付时用 `git rev-parse HEAD` 取得验收 commit，并随仓库链接一同提交。若评估者无法读取私有仓库，可运行 `git archive --format=zip -o ../material-studio-source.zip HEAD` 交付同一提交的源码。源码包包含 CI、锁文件、迁移和示例图片。
 
 ### 本地验收记录
 
@@ -185,10 +187,10 @@ docker compose ps api
 bash tests/smoke/run.sh
 ```
 
-GitHub Actions 的 `compose-smoke` 任务也运行这套检查。脚本使用独立 Compose 项目和临时数据卷，测试结束后清理这些资源。Chromium 测试在 320px 视口验证键盘上传、无 MIME 的有效图片、伪造文件、上传替换与移除的迟到响应，结果预览焦点、跨标签页账号同步和失效素材槽位。服务端测试验证历史分页、批量查询、共享会话、指定阶段失败、Java 进程重启、MySQL 短暂不可用后的恢复，以及清理后文件与记录的一致性。
+GitHub Actions 的 `compose-smoke` 任务也运行这套检查。脚本使用独立 Compose 项目和临时数据卷，测试结束后清理这些资源。Chromium 在 320px 视口验证键盘上传、上传竞争、像素限制提示、预览失败重试和焦点、跨标签页账号同步和失效素材槽位。在桌面视口验证模板筛选与重试、同页连续提交、查询故障恢复、处理中刷新、空闲停止轮询和关页续作。服务端烟测验证真实 PNG 和上传限制、并发幂等、三阶段顺序与定点失败、历史分页、跨账号隔离、Java 和 MySQL 恢复及素材清理。
 
 ## AI 工作流与来源
 
 使用 Codex 辅助实现。先按题目拆分为 Java 业务与持久化、页面状态、容器和验收，再把明确的职责边界和截图布局提供给 Codex。按模块生成并检查实现，最后通过容器构建、单元测试和接口烟测对照题目修正。一个例子是把查询异常单独存为 `queryError`，用两个并发请求的测试让一个任务返回失败、另一个查询断网，确认后者保留已知的运行阶段，并在查询恢复后只更新自己的卡片。
 
-视觉布局参考题目截图。JPEG 封面和结果由 Python 与 Pillow 程序化绘制，随项目离线交付，未使用截图内的品牌和素材。工程采用 Next.js、Spring Boot、MyBatis 等开源依赖，未复制第三方业务代码。Compose 回归使用 Playwright 安装并运行 Chromium。共享会话迁移遵循 Spring Session JDBC 的 MySQL 表结构。 [Spring Session JDBC](https://docs.spring.io/spring-session/reference/configuration/jdbc.html)Maven Wrapper 脚本取自 Apache Maven Wrapper 3.3.4 的 only-script 模板。
+视觉布局参考题目截图。JPEG 封面和结果由 Python 与 Pillow 程序化绘制，随项目离线交付，未使用截图内的品牌和素材。工程采用 Next.js、Spring Boot、MyBatis 等开源依赖，未复制第三方业务代码。Compose 回归使用 Playwright 安装并运行 Chromium。共享会话迁移遵循 [Spring Session JDBC 的 MySQL 表结构](https://docs.spring.io/spring-session/reference/configuration/jdbc.html)。Maven Wrapper 脚本取自 Apache Maven Wrapper 3.3.4 的 only-script 模板。

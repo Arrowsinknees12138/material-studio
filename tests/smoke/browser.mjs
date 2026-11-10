@@ -36,6 +36,7 @@ try {
   const submit = page.getByRole("button", { name: "提交制作" });
   const slot = page.locator(".upload-slot");
   await choose.waitFor();
+  await page.getByText(/单张 ≤ 2400 万像素/).waitFor();
   assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
   assert.equal(await page.locator(".workspace-grid").evaluate((grid) => {
     const [editor, history] = grid.children;
@@ -109,6 +110,8 @@ try {
 
   await select(choose, "last.jpg");
   await preview.waitFor();
+  await page.route(/\/api\/tasks\/[^/]+\/result(?:\?|$)/, (route) =>
+    new URL(route.request().url()).searchParams.has("attempt") ? route.continue() : route.fulfill({ status: 503 }));
   const accepted = page.waitForResponse((response) =>
     new URL(response.url()).pathname === "/api/tasks" && response.request().method() === "POST");
   await submit.press("Enter");
@@ -116,9 +119,15 @@ try {
   assert.equal(submission.status(), 202, await submission.text());
   await page.getByText("任务已受理，可以在记录中查看进度。", { exact: true }).waitFor();
   const result = page.getByRole("button", { name: "预览沙丘日记的结果" }).first();
-  await result.waitFor({ timeout: 25000 });
+  await result.getByText("打开预览").waitFor({ timeout: 25000 });
   await result.press("Enter");
-  await page.getByRole("dialog").waitFor();
+  const dialog = page.getByRole("dialog");
+  await dialog.getByRole("alert").getByText("结果图片暂时无法加载。").waitFor();
+  assert.equal(await page.getByText("制作成功", { exact: true }).count(), 1);
+  await dialog.getByRole("button", { name: "重新加载图片" }).press("Enter");
+  await dialog.getByRole("img", { name: "沙丘日记制作结果" }).waitFor();
+  assert.ok(await dialog.locator("img").evaluate((img) => img.naturalWidth > 0));
+  assert.equal(await dialog.getByRole("alert").count(), 0);
   await page.keyboard.press("Escape");
   await page.getByRole("dialog").waitFor({ state: "hidden" });
   assert.equal(await result.evaluate((node) => node === document.activeElement), true);
@@ -156,7 +165,7 @@ try {
   });
   await expiredPreview.waitFor();
   assert.equal(await submit.isEnabled(), true);
-  console.log("320px keyboard, file signature, upload races, cross-tab session, expired slots and result dialog verified.");
+  console.log("320px keyboard, file signature, upload races, cross-tab session, expired slots and result retry verified.");
 } finally {
   for (const request of held) request.resolve();
   await browser.close();

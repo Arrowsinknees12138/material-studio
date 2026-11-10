@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { setTimeout as sleep } from "node:timers/promises";
+import { crc32, deflateSync } from "node:zlib";
 
 const web = "http://web:3000";
 const [mode, ...args] = process.argv.slice(2);
@@ -58,6 +59,108 @@ async function waitForTask(cookie, id, predicate, retryUnavailable = false) {
     await sleep(150);
   } while (Date.now() < deadline);
   assert.fail("Timed out waiting for task " + id + ": " + JSON.stringify(last));
+}
+
+function png(width, height) {
+  function chunk(type, data) {
+    const header = Buffer.alloc(8);
+    header.writeUInt32BE(data.length);
+    header.write(type, 4);
+    const checksum = Buffer.alloc(4);
+    checksum.writeUInt32BE(crc32(Buffer.concat([header.subarray(4), data])));
+    return Buffer.concat([header, data, checksum]);
+  }
+  const dimensions = Buffer.alloc(13);
+  dimensions.writeUInt32BE(width);
+  dimensions.writeUInt32BE(height, 4);
+  dimensions[8] = 8; // Grayscale with 8 bits per pixel.
+  return Buffer.concat([
+    Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+    chunk("IHDR", dimensions),
+    chunk("IDAT", deflateSync(Buffer.alloc((width + 1) * height))),
+    chunk("IEND", Buffer.alloc(0)),
+  ]);
+}
+
+async function validate() {
+  const catalog = await (await request(web, "/api/templates")).json();
+  assert.equal(catalog.categories.length, 3);
+  assert.equal(catalog.templates.length, 6);
+  for (const category of catalog.categories) {
+    const filtered = await (await request(web, "/api/templates?category=" + encodeURIComponent(category))).json();
+    assert.ok(filtered.templates.length > 0);
+    assert.ok(filtered.templates.every((template) => template.category === category));
+  }
+  for (const template of catalog.templates) {
+    const cover = await request(web, template.coverUrl);
+    assert.equal(cover.headers.get("content-type"), "image/jpeg");
+    assert.ok((await cover.arrayBuffer()).byteLength > 1000);
+  }
+  const empty = await (await request(web, "/api/templates?category=nonexistent")).json();
+  assert.deepEqual(empty.templates, []);
+  await request(web, "/api/templates/nonexistent", { status: 404 });
+
+  const template = await (await request(web, "/api/templates/moon")).json();
+  assert.equal(template.maxImagePixels, 24_000_000);
+  assert.equal(template.maxFileSizeBytes, 5 * 1024 ** 2);
+  const cookie = await login(web, "zhou");
+  async function uploadPng(bytes, status) {
+    const form = new FormData();
+    form.set("templateId", "moon");
+    form.set("file", new Blob([bytes], { type: "image/png" }), "validation.png");
+    return (await request(web, "/api/assets", { cookie, form, status })).json();
+  }
+  const validPng = png(2, 2);
+  const asset = await uploadPng(validPng, 201);
+  const preview = await request(web, asset.previewUrl, { cookie });
+  assert.equal(preview.headers.get("content-type"), "image/png");
+  assert.deepEqual(Buffer.from(await preview.arrayBuffer()), validPng);
+  const other = await login(web, "lin");
+  await request(web, asset.previewUrl, { cookie: other, status: 404 });
+  await request(web, asset.previewUrl, { status: 401 });
+  await uploadPng(validPng.subarray(0, 12), 400);
+  const oversized = png(5000, 5000);
+  assert.ok(oversized.length < template.maxFileSizeBytes);
+  assert.match((await uploadPng(oversized, 400)).message, /2400 万像素/);
+  await uploadPng(Buffer.alloc(template.maxFileSizeBytes + 1), 413);
+
+  const input = { templateId: "moon", assetIds: [asset.assetId], delayMs: 2000 };
+  async function create(overrides, status = 202) {
+    return (await request(web, "/api/tasks", {
+      cookie, status, json: { ...input, requestId: crypto.randomUUID(), ...overrides },
+    })).json();
+  }
+  await create({ assetIds: [] }, 400);
+  await create({ templateId: "desert" }, 400);
+  await create({ delayMs: -1 }, 400);
+  await create({ failAt: "UNKNOWN" }, 400);
+  const requestId = crypto.randomUUID();
+  const [first, duplicate] = await Promise.all([create({ requestId }), create({ requestId })]);
+  assert.equal(first.id, duplicate.id);
+
+  const stages = ["CHECK_INPUTS", "GENERATE", "FINALIZE"];
+  const failedTasks = await Promise.all(stages.map(async (stage) =>
+    (await create({ failAt: stage, delayMs: 0 })).id));
+  const seen = [];
+  const success = await waitForTask(cookie, first.id, (task) => {
+    if (task.stage && task.stage !== seen.at(-1)) seen.push(task.stage);
+    return task.status === "SUCCEEDED";
+  });
+  assert.deepEqual(seen, stages);
+  for (const [index, id] of failedTasks.entries()) {
+    const task = await waitForTask(cookie, id, (item) => item.status === "FAILED");
+    assert.equal(task.stage, stages[index]);
+    assert.match(task.errorMessage, /模拟失败/);
+    assert.equal(task.resultUrl, null);
+  }
+  const result = await request(web, success.resultUrl, { cookie });
+  assert.equal(result.headers.get("content-type"), "image/jpeg");
+  assert.ok((await result.arrayBuffer()).byteLength > 1000);
+  const terminal = await (await request(web, "/api/tasks/updates?ids=" + [first.id, ...failedTasks].join(","), { cookie })).json();
+  assert.equal(terminal.length, 4);
+  assert.equal(terminal.find((task) => task.id === first.id).status, "SUCCEEDED");
+  assert.ok(terminal.filter((task) => task.id !== first.id).every((task) => task.status === "FAILED"));
+  console.log("Catalog, upload boundaries, concurrent idempotency, three stages and terminal states verified.");
 }
 
 async function prepare(restart) {
@@ -129,6 +232,7 @@ async function verify() {
 }
 
 switch (mode) {
+  case "validate": await validate(); break;
   case "prepare-restart": await prepare(true); break;
   case "prepare-outage": await prepare(false); break;
   case "verify": await verify(); break;

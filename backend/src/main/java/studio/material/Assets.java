@@ -167,7 +167,6 @@ class FileStorage {
 
 @Service
 class Assets {
-    private static final long MAX_PIXELS = 24_000_000L;
     private final AssetMapper assets;
     private final Catalog catalog;
     private final FileStorage storage;
@@ -234,7 +233,7 @@ class Assets {
                             case "png" -> "image/png";
                             default -> throw invalidImage();
                         };
-                        if ((long) reader.getWidth(0) * reader.getHeight(0) <= MAX_PIXELS) {
+                        if ((long) reader.getWidth(0) * reader.getHeight(0) <= Template.MAX_IMAGE_PIXELS) {
                             reader.read(0);
                             return type;
                         }
@@ -250,7 +249,8 @@ class Assets {
     }
 
     private ResponseStatusException invalidImage() {
-        return new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择可读取的 JPEG 或 PNG 图片（不超过 2400 万像素）。");
+        return new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择可读取的 JPEG 或 PNG 图片（不超过 "
+                + Template.MAX_IMAGE_PIXELS / 10_000 + " 万像素）。");
     }
 }
 

@@ -167,6 +167,7 @@ function CreationForm({ template, accept }: { template: Template; accept: (task:
         <legend>上传素材</legend>
         <p className="input-help">
           {template.requiredImageCount} 张图片 · JPEG / PNG · 单张 ≤ {template.maxFileSizeBytes / 1024 ** 2} MB
+          {" · 单张 ≤ "}{template.maxImagePixels / 10_000} 万像素
         </p>
         <div className="upload-list">
           {slots.map((slot, index) => (

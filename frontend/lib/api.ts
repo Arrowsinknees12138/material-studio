@@ -12,6 +12,7 @@ export interface Template {
   requiredImageCount: number;
   acceptedMimeTypes: string[];
   maxFileSizeBytes: number;
+  maxImagePixels: number;
 }
 
 export interface Catalog {

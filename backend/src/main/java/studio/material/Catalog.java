@@ -15,14 +15,17 @@ import org.springframework.web.server.ResponseStatusException;
 
 record Template(String id, String title, String category, String description, String coverUrl,
                 String sampleResult, int requiredImageCount, String acceptedMimeTypes, long maxFileSizeBytes) {
+    static final long MAX_IMAGE_PIXELS = 24_000_000L;
+
     TemplateView view() {
         return new TemplateView(id, title, category, description, coverUrl, requiredImageCount,
-                List.of(acceptedMimeTypes.split(",")), maxFileSizeBytes);
+                List.of(acceptedMimeTypes.split(",")), maxFileSizeBytes, MAX_IMAGE_PIXELS);
     }
 }
 
 record TemplateView(String id, String title, String category, String description, String coverUrl,
-                    int requiredImageCount, List<String> acceptedMimeTypes, long maxFileSizeBytes) {}
+                    int requiredImageCount, List<String> acceptedMimeTypes, long maxFileSizeBytes,
+                    long maxImagePixels) {}
 record CatalogView(List<String> categories, List<TemplateView> templates) {}
 
 @Mapper

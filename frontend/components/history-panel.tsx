@@ -101,9 +101,45 @@ export function useHistory(templateId?: string) {
   };
 }
 
+function ResultThumbnail({ url, title, open }: { url: string; title: string; open: () => void }) {
+  const [failed, setFailed] = useState(false);
+  return (
+    <button className="result-thumb" onClick={open} aria-label={"预览" + title + "的结果"}>
+      {failed ? "打开预览" : <img src={url} alt="" onError={() => setFailed(true)} />}
+      <span aria-hidden="true">↗</span>
+    </button>
+  );
+}
+
+function ResultPreview({ url, title, focusClose }: { url: string; title: string; focusClose: () => void }) {
+  const [attempt, setAttempt] = useState(0);
+  const [state, setState] = useState<"loading" | "ready" | "failed">("loading");
+  if (state === "failed") {
+    return (
+      <div className="empty-box">
+        <p role="alert">结果图片暂时无法加载。</p>
+        <button className="secondary-button" onClick={() => {
+          focusClose();
+          setAttempt((current) => current + 1);
+          setState("loading");
+        }}>重新加载图片</button>
+      </div>
+    );
+  }
+  return (
+    <>
+      {state === "loading" && <p className="empty-box" role="status">正在加载结果图片…</p>}
+      <img key={attempt} src={attempt ? url + "?attempt=" + attempt : url}
+        alt={title + "制作结果"} hidden={state !== "ready"}
+        onLoad={() => setState("ready")} onError={() => setState("failed")} />
+    </>
+  );
+}
+
 export function HistoryPanel({ history, full = false }: { history: ReturnType<typeof useHistory>; full?: boolean }) {
   const dialog = useRef<HTMLDialogElement>(null);
-  const [preview, setPreview] = useState<Task | null>(null);
+  const closePreview = useRef<HTMLButtonElement>(null);
+  const [preview, setPreview] = useState<{ url: string; title: string } | null>(null);
 
   useEffect(() => {
     if (preview && dialog.current && !dialog.current.open) dialog.current.showModal();
@@ -137,31 +173,32 @@ export function HistoryPanel({ history, full = false }: { history: ReturnType<ty
       )}
       {history.entries.length > 0 && (
         <div className="task-grid">
-          {history.entries.map(({ task, queryError }) => (
-            <article className="task-card" key={task.id}>
-              {task.resultUrl ? (
-                <button className="result-thumb" onClick={() => setPreview(task)} aria-label={"预览" + task.templateTitle + "的结果"}>
-                  <img src={task.resultUrl} alt={task.templateTitle + "制作结果"} />
-                  <span aria-hidden="true">↗</span>
-                </button>
-              ) : (
-                <div className={"task-placeholder " + task.status.toLowerCase()} aria-hidden="true">
-                  <span>{task.status === "FAILED" ? "!" : task.status === "RUNNING" ? "✳" : "◷"}</span>
+          {history.entries.map(({ task, queryError }) => {
+            const url = task.resultUrl;
+            return (
+              <article className="task-card" key={task.id}>
+                {url ? (
+                  <ResultThumbnail url={url} title={task.templateTitle}
+                    open={() => setPreview({ url, title: task.templateTitle })} />
+                ) : (
+                  <div className={"task-placeholder " + task.status.toLowerCase()} aria-hidden="true">
+                    <span>{task.status === "FAILED" ? "!" : task.status === "RUNNING" ? "✳" : "◷"}</span>
+                  </div>
+                )}
+                <div className="task-copy">
+                  <span className={"status-pill " + task.status.toLowerCase()}>{labels[task.status]}</span>
+                  <h3>{task.templateTitle}</h3>
+                  <time dateTime={task.createdAt}>{dateFormat.format(new Date(task.createdAt))}</time>
+                  {task.stage && task.status !== "SUCCEEDED" && <p>{stageLabels[task.stage]}</p>}
+                  {task.errorMessage && <p className="task-error">{task.errorMessage}</p>}
+                  {queryError && <div className="query-error" role="status">
+                    <p>暂时无法更新 · {queryError}</p>
+                    <button className="text-button" onClick={() => history.retry(task.id)}>重新查询</button>
+                  </div>}
                 </div>
-              )}
-              <div className="task-copy">
-                <span className={"status-pill " + task.status.toLowerCase()}>{labels[task.status]}</span>
-                <h3>{task.templateTitle}</h3>
-                <time dateTime={task.createdAt}>{dateFormat.format(new Date(task.createdAt))}</time>
-                {task.stage && task.status !== "SUCCEEDED" && <p>{stageLabels[task.stage]}</p>}
-                {task.errorMessage && <p className="task-error">{task.errorMessage}</p>}
-                {queryError && <div className="query-error" role="status">
-                  <p>暂时无法更新 · {queryError}</p>
-                  <button className="text-button" onClick={() => history.retry(task.id)}>重新查询</button>
-                </div>}
-              </div>
-            </article>
-          ))}
+              </article>
+            );
+          })}
         </div>
       )}
       {history.nextCursor && <div className="button-row">
@@ -170,9 +207,10 @@ export function HistoryPanel({ history, full = false }: { history: ReturnType<ty
       <dialog className="preview-dialog" ref={dialog} aria-labelledby="preview-title" onClose={() => setPreview(null)}>
         {preview && (
           <>
-            <header><h2 id="preview-title">{preview.templateTitle}</h2>
-              <button className="icon-button" aria-label="关闭结果预览" onClick={() => dialog.current?.close()}>×</button></header>
-            <img src={preview.resultUrl ?? ""} alt={preview.templateTitle + "制作结果"} />
+            <header><h2 id="preview-title">{preview.title}</h2>
+              <button ref={closePreview} className="icon-button" aria-label="关闭结果预览"
+                onClick={() => dialog.current?.close()}>×</button></header>
+            <ResultPreview url={preview.url} title={preview.title} focusClose={() => closePreview.current?.focus()} />
           </>
         )}
       </dialog>

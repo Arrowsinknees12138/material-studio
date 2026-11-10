@@ -5,6 +5,7 @@ cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.."
 project="material-studio-smoke-${BASHPID}"
 image="$project-runner"
 export WEB_PORT=0 SIMULATION_ENABLED=true
+export SIM_CHECK_MS=2000 SIM_GENERATE_MS=7000 SIM_FINALIZE_MS=2000
 export ASSET_RETENTION_SECONDS=86400 ASSET_CLEANUP_INTERVAL_MS=500
 export MSYS_NO_PATHCONV=1
 
@@ -34,6 +35,8 @@ replica_ips() {
 docker build -t "$image" tests/smoke
 compose up --build -d --wait --wait-timeout 120 --scale api=2
 runner browser.mjs
+runner workflow.mjs
+runner service.mjs validate
 
 ips=$(replica_ips)
 readarray -t replicas <<< "$ips"
