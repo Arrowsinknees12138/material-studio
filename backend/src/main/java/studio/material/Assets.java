@@ -9,6 +9,7 @@ import java.nio.file.StandardCopyOption;
 import java.util.Iterator;
 import java.util.List;
 import java.util.UUID;
+import java.util.stream.Collectors;
 import javax.imageio.ImageIO;
 import javax.imageio.ImageReader;
 import javax.imageio.stream.ImageInputStream;
@@ -185,9 +186,15 @@ class Assets {
         if (file.isEmpty() || file.getSize() > template.maxFileSizeBytes()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "图片为空或超过模板大小上限。");
         }
-        String type = imageType(file);
-        if (!template.view().acceptedMimeTypes().contains(type)) {
-            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "模板仅支持 JPEG 或 PNG 图片。");
+        List<String> acceptedTypes = template.view().acceptedMimeTypes();
+        String acceptedFormats = acceptedTypes.stream().map(type -> switch (type) {
+            case MediaType.IMAGE_JPEG_VALUE -> "JPEG";
+            case MediaType.IMAGE_PNG_VALUE -> "PNG";
+            default -> type;
+        }).collect(Collectors.joining(" 或 "));
+        String type = imageType(file, acceptedFormats);
+        if (!acceptedTypes.contains(type)) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "模板仅支持 " + acceptedFormats + " 图片。");
         }
         String id = UUID.randomUUID().toString();
         String key = "uploads/" + id + (type.equals("image/png") ? ".png" : ".jpg");
@@ -220,7 +227,7 @@ class Assets {
         return asset;
     }
 
-    private String imageType(MultipartFile file) {
+    private String imageType(MultipartFile file, String acceptedFormats) {
         try (InputStream raw = file.getInputStream(); ImageInputStream input = ImageIO.createImageInputStream(raw)) {
             if (input != null) {
                 Iterator<ImageReader> readers = ImageIO.getImageReaders(input);
@@ -231,7 +238,7 @@ class Assets {
                         String type = switch (reader.getFormatName().toLowerCase(java.util.Locale.ROOT)) {
                             case "jpeg" -> "image/jpeg";
                             case "png" -> "image/png";
-                            default -> throw invalidImage();
+                            default -> throw invalidImage(acceptedFormats);
                         };
                         if ((long) reader.getWidth(0) * reader.getHeight(0) <= Template.MAX_IMAGE_PIXELS) {
                             reader.read(0);
@@ -243,13 +250,13 @@ class Assets {
                 }
             }
         } catch (IOException | IllegalArgumentException error) {
-            throw invalidImage();
+            throw invalidImage(acceptedFormats);
         }
-        throw invalidImage();
+        throw invalidImage(acceptedFormats);
     }
 
-    private ResponseStatusException invalidImage() {
-        return new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择可读取的 JPEG 或 PNG 图片（不超过 "
+    private ResponseStatusException invalidImage(String acceptedFormats) {
+        return new ResponseStatusException(HttpStatus.BAD_REQUEST, "请选择可读取的 " + acceptedFormats + " 图片（不超过 "
                 + Template.MAX_IMAGE_PIXELS / 10_000 + " 万像素）。");
     }
 }

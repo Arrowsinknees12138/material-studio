@@ -61,7 +61,7 @@ export class ApiError extends Error {
   }
 }
 
-export async function api<T>(path: string, options: RequestInit = {}): Promise<T> {
+async function request<T>(url: string, options: RequestInit, read: (response: Response) => Promise<T>): Promise<T> {
   const headers = new Headers(options.headers);
   const method = options.method?.toUpperCase() ?? "GET";
   if (method !== "GET") headers.set("X-Studio-Request", "1");
@@ -71,18 +71,17 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
   const timer = setTimeout(() => timeout.abort(), method === "GET" ? 8000 : 30000);
 
   try {
-    const response = await fetch("/api" + path, { ...options, headers, signal, cache: "no-store" });
+    const response = await fetch(url, { ...options, headers, signal, cache: "no-store" });
     if (!response.ok) {
-      const payload = await response.json().catch(() => null);
-      if (response.status === 401 && !path.startsWith("/session") && typeof window !== "undefined") {
+      if (response.status === 401 && !signal.aborted && !url.startsWith("/api/session") && typeof window !== "undefined") {
         window.dispatchEvent(new Event(sessionCheckEvent));
       }
+      const payload = await response.json().catch(() => null);
       const ids = payload?.unavailableAssetIds;
       throw new ApiError(response.status, payload?.message ?? "请求失败，请重试。",
         Array.isArray(ids) ? ids.filter((id): id is string => typeof id === "string") : []);
     }
-    if (response.status === 204) return undefined as T;
-    return await response.json() as T;
+    return await read(response);
   } catch (error) {
     if (options.signal?.aborted) throw error;
     if (timeout.signal.aborted) throw new ApiError(0, "请求超时，请重试。");
@@ -91,6 +90,15 @@ export async function api<T>(path: string, options: RequestInit = {}): Promise<T
   } finally {
     clearTimeout(timer);
   }
+}
+
+export function api<T>(path: string, options: RequestInit = {}): Promise<T> {
+  return request("/api" + path, options, async (response) =>
+    response.status === 204 ? undefined as T : await response.json() as T);
+}
+
+export function fetchImage(url: string, options: RequestInit = {}): Promise<Blob> {
+  return request(url, options, (response) => response.blob());
 }
 
 export function jsonBody(data: object, signal?: AbortSignal): RequestInit {

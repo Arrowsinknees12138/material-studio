@@ -3,7 +3,8 @@
 /* eslint-disable @next/next/no-img-element -- Private images need the browser session cookie. */
 import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
-import { api, errorMessage, stageLabels, type Task, type TaskPage, type TaskStatus } from "../lib/api";
+import { ApiError, api, errorMessage, stageLabels, type Task, type TaskPage, type TaskStatus } from "../lib/api";
+import { loadImagePreview } from "../lib/image-preview";
 import { createTaskFeed, type TaskEntry } from "../lib/task-feed";
 import { useSession } from "./studio-shell";
 
@@ -111,27 +112,46 @@ function ResultThumbnail({ url, title, open }: { url: string; title: string; ope
   );
 }
 
+type ResultImage =
+  | { state: "loading"; src?: string }
+  | { state: "ready"; src: string }
+  | { state: "failed"; message: string };
+
+const resultPreviewError = "结果图片暂时无法加载。";
+
 function ResultPreview({ url, title, focusClose }: { url: string; title: string; focusClose: () => void }) {
+  const { user } = useSession();
+  const username = user?.username ?? "";
   const [attempt, setAttempt] = useState(0);
-  const [state, setState] = useState<"loading" | "ready" | "failed">("loading");
-  if (state === "failed") {
+  const [image, setImage] = useState<ResultImage>({ state: "loading" });
+
+  useEffect(() => loadImagePreview(attempt ? url + "?attempt=" + attempt : url, username,
+    (src) => setImage({ state: "loading", src }),
+    (error) => {
+      const message = error instanceof ApiError && (error.status === 0 || error.status === 401)
+        ? error.message : resultPreviewError;
+      setImage({ state: "failed", message });
+    }), [attempt, url, username]);
+
+  if (image.state === "failed") {
     return (
       <div className="empty-box">
-        <p role="alert">结果图片暂时无法加载。</p>
+        <p role="alert">{image.message}</p>
         <button className="secondary-button" onClick={() => {
           focusClose();
           setAttempt((current) => current + 1);
-          setState("loading");
+          setImage({ state: "loading" });
         }}>重新加载图片</button>
       </div>
     );
   }
+  const src = image.src;
   return (
     <>
-      {state === "loading" && <p className="empty-box" role="status">正在加载结果图片…</p>}
-      <img key={attempt} src={attempt ? url + "?attempt=" + attempt : url}
-        alt={title + "制作结果"} hidden={state !== "ready"}
-        onLoad={() => setState("ready")} onError={() => setState("failed")} />
+      {image.state === "loading" && <p className="empty-box" role="status">正在加载结果图片…</p>}
+      {src && <img src={src} alt={title + "制作结果"} hidden={image.state !== "ready"}
+        onLoad={() => setImage({ state: "ready", src })}
+        onError={() => setImage({ state: "failed", message: resultPreviewError })} />}
     </>
   );
 }

@@ -9,15 +9,32 @@ try {
   page.setDefaultTimeout(12000);
 
   await page.route("**/api/templates", (route) => route.fulfill({ status: 503 }), { times: 1 });
+  await page.route((url) => url.pathname === "/demo/desert.jpg" && !url.searchParams.has("attempt"),
+    (route) => route.fulfill({ status: 503 }));
   await page.goto("/templates");
   await page.getByRole("alert").getByText("模板暂时无法加载").waitFor();
   await page.getByRole("button", { name: "重新加载" }).click();
   await page.getByText("6 款模板", { exact: true }).waitFor();
+  const desertCard = page.locator(".template-card").filter({ hasText: "沙丘日记" });
+  await desertCard.getByText("封面暂时无法加载。").waitFor();
+  await desertCard.getByRole("button", { name: "重试沙丘日记封面" }).click();
+  await desertCard.locator("img").waitFor();
+
+  await page.route((url) => url.pathname === "/api/templates" && url.searchParams.has("category"),
+    (route) => route.fulfill({ status: 503 }), { times: 1 });
   await page.getByRole("button", { name: "旅行风景" }).click();
+  await page.getByRole("alert").getByText("模板暂时无法加载").waitFor();
+  assert.equal(await page.locator(".catalog-count").innerText(), "加载失败");
+  assert.equal(await page.getByText("6 款模板", { exact: true }).count(), 0);
+  await page.getByRole("button", { name: "重新加载" }).click();
   await page.getByText("2 款模板", { exact: true }).waitFor();
   assert.equal(await page.locator(".template-card").count(), 2);
-  await page.getByRole("link", { name: /沙丘日记/ }).click();
+  await page.getByRole("link", { name: /沙丘日记/ }).press("Enter");
   await page.getByRole("heading", { name: /沙丘日记/ }).waitFor();
+  const workspaceCover = page.locator(".workspace-cover");
+  await workspaceCover.getByText("封面暂时无法加载。").waitFor();
+  await workspaceCover.getByRole("button", { name: "重试沙丘日记封面" }).press("Enter");
+  await workspaceCover.getByRole("img", { name: "沙丘日记模板封面" }).waitFor();
   await page.getByRole("button", { name: "使用周野" }).click();
   const sample = await page.request.get("/demo/desert.jpg");
   assert.ok(sample.ok());
@@ -47,13 +64,33 @@ try {
     await submit.click();
     const accepted = await response;
     assert.equal(accepted.status(), 202, await accepted.text());
-    const task = await accepted.json();
-    assert.equal(task.status, "QUEUED");
-    return task.id;
+    return accepted.json();
   }
 
-  ids.push(await submitTask());
-  ids.push(await submitTask());
+  let lost;
+  await page.route("**/api/tasks", async (route) => {
+    const response = await route.fetch();
+    lost = { input: route.request().postDataJSON(), status: response.status(), task: await response.json() };
+    await route.abort("connectionreset");
+  }, { times: 1 });
+  await submit.click();
+  await page.getByRole("alert").getByText("网络连接暂时不可用，请重试。").waitFor();
+  assert.equal(lost.status, 202);
+  assert.equal(lost.task.status, "QUEUED");
+  assert.equal(await page.locator(".task-card").count(), 0);
+
+  const replay = page.waitForRequest((request) =>
+    new URL(request.url()).pathname === "/api/tasks" && request.method() === "POST");
+  const first = await submitTask();
+  assert.deepEqual((await replay).postDataJSON(), lost.input);
+  assert.equal(first.id, lost.task.id);
+  const persisted = await page.request.get("/api/tasks?templateId=desert");
+  assert.ok(persisted.ok());
+  assert.deepEqual((await persisted.json()).map((task) => task.id), [first.id]);
+
+  const second = await submitTask();
+  assert.equal(second.status, "QUEUED");
+  ids.push(first.id, second.id);
   assert.notEqual(ids[0], ids[1]);
   const retry = page.getByRole("button", { name: "重新查询" }).first();
   await retry.waitFor();
@@ -76,7 +113,7 @@ try {
   await page.locator('input[type="file"]').setInputFiles({
     name: "close-page.jpg", mimeType: "image/jpeg", buffer: await sample.body(),
   });
-  const unattended = await submitTask();
+  const unattended = (await submitTask()).id;
   await page.close();
   const deadline = Date.now() + 22000;
   while (true) {
@@ -93,7 +130,7 @@ try {
   await history.locator('img[src="/api/tasks/' + unattended + '/result"]').waitFor();
   await history.goto("/templates/nonexistent");
   await history.getByRole("heading", { name: "找不到这个模板" }).waitFor();
-  console.log("Catalog, consecutive submissions, query recovery, refresh, idle polling and closing the page verified.");
+  console.log("Catalog, lost submission response and idempotent retry, query recovery, refresh, idle polling and closing the page verified.");
 } finally {
   await browser.close();
 }

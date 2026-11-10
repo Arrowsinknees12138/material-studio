@@ -10,6 +10,9 @@ import java.util.Locale;
 import java.util.Objects;
 import java.util.UUID;
 
+import com.fasterxml.jackson.annotation.JsonCreator;
+import com.fasterxml.jackson.annotation.JsonProperty;
+import com.fasterxml.jackson.databind.JsonNode;
 import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
@@ -42,7 +45,30 @@ class UnavailableAssets extends RuntimeException {
     }
 }
 
-record Submission(String templateId, List<String> assetIds, UUID requestId, TaskStage failAt, Integer delayMs) {}
+record Submission(String templateId, List<String> assetIds, UUID requestId, TaskStage failAt, Integer delayMs) {
+    @JsonCreator
+    static Submission fromJson(@JsonProperty("templateId") String templateId,
+                               @JsonProperty("assetIds") List<String> assetIds,
+                               @JsonProperty("requestId") UUID requestId,
+                               @JsonProperty("failAt") JsonNode failAt,
+                               @JsonProperty("delayMs") JsonNode delayMs) {
+        TaskStage stage = null;
+        if (failAt != null && !failAt.isNull()) {
+            if (!failAt.isTextual()) {
+                throw new IllegalArgumentException("failAt must be a stage name");
+            }
+            stage = TaskStage.valueOf(failAt.textValue());
+        }
+        Integer delay = null;
+        if (delayMs != null && !delayMs.isNull()) {
+            if (!delayMs.isIntegralNumber() || !delayMs.canConvertToInt()) {
+                throw new IllegalArgumentException("delayMs must be an integer");
+            }
+            delay = delayMs.intValue();
+        }
+        return new Submission(templateId, assetIds, requestId, stage, delay);
+    }
+}
 
 @Service
 class Tasks {

@@ -57,6 +57,77 @@ describe("task feed", () => {
     expect(read).toHaveBeenCalledTimes(2);
   });
 
+  it("keeps a later stage and terminal result when older history or polling responses arrive", async () => {
+    const pending = Promise.withResolvers<Task[]>();
+    const read = vi.fn(() => pending.promise);
+    const onChange = vi.fn<(entries: TaskEntry[]) => void>();
+    const feed = createTaskFeed(read, onChange, 50);
+    const finalizing = { ...task("a"), stage: "FINALIZE" as const };
+    const finished = { ...finalizing, status: "SUCCEEDED" as const, resultUrl: "/api/tasks/a/result" };
+
+    feed.add([finalizing]);
+    feed.add([task("a", "QUEUED")]);
+    expect(onChange.mock.lastCall?.[0]).toEqual([{ task: finalizing, queryError: null }]);
+    await vi.advanceTimersByTimeAsync(50);
+
+    feed.add([finished]);
+    pending.resolve([task("a")]);
+    await vi.advanceTimersByTimeAsync(500);
+
+    expect(onChange.mock.lastCall?.[0]).toEqual([{ task: finished, queryError: null }]);
+    expect(read).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps polling other batches after a transport error and recovers the affected tasks", async () => {
+    const stalled = Array.from({ length: 50 }, (_, index) => task("stalled-" + index));
+    const done = task("done", "FAILED");
+    const read = vi.fn<(ids: string[], signal: AbortSignal) => Promise<Task[]>>()
+      .mockRejectedValueOnce(new Error("connection lost"))
+      .mockResolvedValueOnce([done])
+      .mockImplementation(async (ids) => ids.map((id) => task(id, "SUCCEEDED")));
+    const onChange = vi.fn<(entries: TaskEntry[]) => void>();
+    const feed = createTaskFeed(read, onChange, 50);
+    feed.add([...stalled, task("done", "QUEUED")]);
+
+    await vi.advanceTimersByTimeAsync(50);
+    const entries = onChange.mock.lastCall?.[0] ?? [];
+    expect(entries).toContainEqual({ task: done, queryError: null });
+    expect(entries.filter(({ queryError }) => queryError === "connection lost")).toHaveLength(50);
+    expect(entries.find(({ task }) => task.id === "stalled-0")).toEqual({
+      task: stalled[0], queryError: "connection lost",
+    });
+
+    await vi.advanceTimersByTimeAsync(500);
+    expect(read.mock.calls.map(([ids]) => ids)).toEqual([
+      stalled.map(({ id }) => id), ["done"], stalled.map(({ id }) => id),
+    ]);
+    expect(onChange.mock.lastCall?.[0].filter(({ task, queryError }) =>
+      task.status === "SUCCEEDED" && queryError === null)).toHaveLength(50);
+  });
+
+  it("tracks a task accepted during a pending poll without overlapping update requests", async () => {
+    const pending = Promise.withResolvers<Task[]>();
+    const read = vi.fn<(ids: string[], signal: AbortSignal) => Promise<Task[]>>()
+      .mockReturnValueOnce(pending.promise)
+      .mockResolvedValueOnce([task("new", "SUCCEEDED")]);
+    const onChange = vi.fn<(entries: TaskEntry[]) => void>();
+    const feed = createTaskFeed(read, onChange, 50);
+    feed.add([task("old")]);
+    await vi.advanceTimersByTimeAsync(50);
+
+    const added = task("new", "QUEUED");
+    feed.add([added]);
+    feed.retry("new");
+    await vi.advanceTimersByTimeAsync(500);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(onChange.mock.lastCall?.[0]).toContainEqual({ task: added, queryError: null });
+
+    pending.resolve([task("old", "SUCCEEDED")]);
+    await vi.advanceTimersByTimeAsync(500);
+    expect(read.mock.calls.map(([ids]) => ids)).toEqual([["old"], ["new"]]);
+    expect(onChange.mock.lastCall?.[0]).toContainEqual({ task: task("new", "SUCCEEDED"), queryError: null });
+  });
+
   it("aborts in-flight reads and ignores late responses after disposal", async () => {
     let complete!: (tasks: Task[]) => void;
     const response = new Promise<Task[]>((resolve) => { complete = resolve; });

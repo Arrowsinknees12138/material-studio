@@ -1,8 +1,8 @@
 "use client";
 
-/* eslint-disable @next/next/no-img-element -- Covers are small local JPEGs served by Java. */
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { TemplateCover } from "../../components/template-cover";
 import { api, errorMessage, type Catalog } from "../../lib/api";
 
 export default function TemplatesPage() {
@@ -47,7 +47,9 @@ export default function TemplatesPage() {
                 onClick={() => load(category)}>{category}</button>
             ))}
           </div>
-          <span className="catalog-count">{loading ? "正在加载" : catalog ? catalog.templates.length + " 款模板" : "模板库"}</span>
+          <span className="catalog-count">
+            {loading ? "正在加载" : problem ? "加载失败" : (catalog?.templates.length ?? 0) + " 款模板"}
+          </span>
         </div>
         {loading ? (
           <div className="template-grid" aria-busy="true" aria-label="正在加载模板">
@@ -62,14 +64,17 @@ export default function TemplatesPage() {
         ) : (
           <div className="template-grid">
             {catalog.templates.map((template) => (
-              <Link href={"/templates/" + template.id} className="template-card" key={template.id}>
-                <img src={template.coverUrl} alt="" width={640} height={840} />
-                <span className="template-badge">{template.category}</span>
-                <span className="template-caption">
-                  <span><strong>{template.title}</strong><small>需要 {template.requiredImageCount} 张图片</small></span>
-                  <span className="card-arrow" aria-hidden="true">↗</span>
-                </span>
-              </Link>
+              <article className="template-card" key={template.id}>
+                <TemplateCover key={template.coverUrl} className="catalog-cover"
+                  url={template.coverUrl} title={template.title} decorative />
+                <Link href={"/templates/" + template.id} className="template-card-link">
+                  <span className="template-badge">{template.category}</span>
+                  <span className="template-caption">
+                    <span><strong>{template.title}</strong><small>需要 {template.requiredImageCount} 张图片</small></span>
+                    <span className="card-arrow" aria-hidden="true">↗</span>
+                  </span>
+                </Link>
+              </article>
             ))}
           </div>
         )}

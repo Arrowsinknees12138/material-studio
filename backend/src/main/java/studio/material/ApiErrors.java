@@ -8,7 +8,9 @@ import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
+import org.springframework.web.multipart.support.MissingServletRequestPartException;
 import org.springframework.web.server.ResponseStatusException;
 
 @RestControllerAdvice
@@ -29,9 +31,21 @@ class ApiErrors {
         return ResponseEntity.badRequest().body(Map.of("message", "请求缺少必要字段或字段格式无效。"));
     }
 
+    @ExceptionHandler(MissingServletRequestPartException.class)
+    ResponseEntity<Map<String, String>> missingPart(MissingServletRequestPartException error) {
+        String part = error.getRequestPartName();
+        String message = "file".equals(part) ? "请选择要上传的图片。" : "缺少上传字段 " + part + "。";
+        return ResponseEntity.badRequest().body(Map.of("message", message));
+    }
+
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    ResponseEntity<Map<String, String>> invalidParameter(MethodArgumentTypeMismatchException error) {
+        return ResponseEntity.badRequest().body(Map.of("message", "参数 " + error.getName() + " 格式无效。"));
+    }
+
     @ExceptionHandler(MaxUploadSizeExceededException.class)
     ResponseEntity<Map<String, String>> uploadTooLarge() {
         return ResponseEntity.status(HttpStatus.PAYLOAD_TOO_LARGE)
-                .body(Map.of("message", "图片超过 5 MB，请选择较小的图片。"));
+                .body(Map.of("message", "图片超过上传大小上限，请选择较小的图片。"));
     }
 }

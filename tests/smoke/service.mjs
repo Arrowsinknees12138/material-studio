@@ -103,7 +103,16 @@ async function validate() {
   const template = await (await request(web, "/api/templates/moon")).json();
   assert.equal(template.maxImagePixels, 24_000_000);
   assert.equal(template.maxFileSizeBytes, 5 * 1024 ** 2);
+  const capped = await (await request(web, "/api/templates/garden")).json();
+  assert.equal(capped.maxFileSizeBytes, template.maxFileSizeBytes);
+  assert.equal(catalog.templates.find((item) => item.id === "garden").maxFileSizeBytes, capped.maxFileSizeBytes);
   const cookie = await login(web, "zhou");
+  const missingFile = new FormData();
+  missingFile.set("templateId", "moon");
+  const missing = await request(web, "/api/assets", { cookie, form: missingFile, status: 400 });
+  assert.equal((await missing.json()).message, "请选择要上传的图片。");
+  const invalidLimit = await request(web, "/api/tasks/history?limit=bad", { cookie, status: 400 });
+  assert.equal((await invalidLimit.json()).message, "参数 limit 格式无效。");
   async function uploadPng(bytes, status) {
     const form = new FormData();
     form.set("templateId", "moon");
@@ -133,6 +142,8 @@ async function validate() {
   await create({ assetIds: [] }, 400);
   await create({ templateId: "desert" }, 400);
   await create({ delayMs: -1 }, 400);
+  await create({ delayMs: 1.5 }, 400);
+  await create({ failAt: 1 }, 400);
   await create({ failAt: "UNKNOWN" }, 400);
   const requestId = crypto.randomUUID();
   const [first, duplicate] = await Promise.all([create({ requestId }), create({ requestId })]);

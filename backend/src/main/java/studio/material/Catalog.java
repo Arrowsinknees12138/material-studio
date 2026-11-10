@@ -4,6 +4,7 @@ import java.util.List;
 
 import org.apache.ibatis.annotations.Mapper;
 import org.apache.ibatis.annotations.Select;
+import org.springframework.boot.autoconfigure.web.servlet.MultipartProperties;
 import org.springframework.http.HttpStatus;
 import org.springframework.stereotype.Service;
 import org.springframework.web.bind.annotation.GetMapping;
@@ -16,6 +17,12 @@ import org.springframework.web.server.ResponseStatusException;
 record Template(String id, String title, String category, String description, String coverUrl,
                 String sampleResult, int requiredImageCount, String acceptedMimeTypes, long maxFileSizeBytes) {
     static final long MAX_IMAGE_PIXELS = 24_000_000L;
+
+    Template withUploadLimit(long limit) {
+        if (limit < 0 || maxFileSizeBytes <= limit) return this;
+        return new Template(id, title, category, description, coverUrl, sampleResult,
+                requiredImageCount, acceptedMimeTypes, limit);
+    }
 
     TemplateView view() {
         return new TemplateView(id, title, category, description, coverUrl, requiredImageCount,
@@ -48,9 +55,11 @@ interface TemplateMapper {
 @Service
 class Catalog {
     private final TemplateMapper templates;
+    private final long uploadLimit;
 
-    Catalog(TemplateMapper templates) {
+    Catalog(TemplateMapper templates, MultipartProperties multipart) {
         this.templates = templates;
+        this.uploadLimit = multipart.getMaxFileSize().toBytes();
     }
 
     Template require(String id) {
@@ -58,11 +67,13 @@ class Catalog {
         if (template == null) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "未找到该模板。");
         }
-        return template;
+        return template.withUploadLimit(uploadLimit);
     }
 
     CatalogView list(String category) {
-        return new CatalogView(templates.categories(), templates.list(category).stream().map(Template::view).toList());
+        List<TemplateView> views = templates.list(category).stream()
+                .map(template -> template.withUploadLimit(uploadLimit).view()).toList();
+        return new CatalogView(templates.categories(), views);
     }
 }
 

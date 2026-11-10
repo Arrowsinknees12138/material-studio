@@ -33,6 +33,8 @@ export function StudioShell({ children }: { children: ReactNode }) {
   const checking = useRef<AbortController | null>(null);
   const checkAfterAction = useRef(false);
   const menu = useRef<HTMLDetailsElement>(null);
+  const main = useRef<HTMLElement>(null);
+  const focusAfterLogin = useRef(false);
   const pathname = usePathname();
 
   useEffect(() => {
@@ -80,14 +82,21 @@ export function StudioShell({ children }: { children: ReactNode }) {
 
   useEffect(() => () => action.current?.abort(), []);
 
+  useEffect(() => {
+    if (busy || !focusAfterLogin.current) return;
+    focusAfterLogin.current = false;
+    if (user) (main.current?.querySelector<HTMLElement>("[data-focus-after-login]") ?? main.current)?.focus();
+  }, [busy, user]);
+
   function refresh() {
     setError(null);
     setBusy(true);
     setRefreshKey((key) => key + 1);
   }
 
-  async function changeSession(username?: string) {
+  async function changeSession(username?: string, focusWorkspace = false) {
     if (busy || action.current) return;
+    focusAfterLogin.current = focusWorkspace;
     if (menu.current) menu.current.open = false;
     const controller = new AbortController();
     checking.current?.abort();
@@ -125,7 +134,7 @@ export function StudioShell({ children }: { children: ReactNode }) {
   }
 
   return (
-    <SessionContext.Provider value={{ user, busy, error, login: (id) => void changeSession(id), refresh }}>
+    <SessionContext.Provider value={{ user, busy, error, login: (id) => void changeSession(id, true), refresh }}>
       <a href="#main" className="skip-link">跳转到主要内容</a>
       <header className="site-header">
         <div className="header-inner">
@@ -158,7 +167,7 @@ export function StudioShell({ children }: { children: ReactNode }) {
       {error && <div className="shell-error notice" role="alert">
         {error} <button className="text-button" onClick={refresh}>重新检查账号</button>
       </div>}
-      <main id="main" tabIndex={-1}>{children}</main>
+      <main id="main" tabIndex={-1} ref={main}>{children}</main>
     </SessionContext.Provider>
   );
 }

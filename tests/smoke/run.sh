@@ -34,6 +34,7 @@ replica_ips() {
 
 docker build -t "$image" tests/smoke
 compose up --build -d --wait --wait-timeout 120 --scale api=2
+sql "UPDATE templates SET accepted_mime_types = 'image/png', max_file_size_bytes = 8388608 WHERE id = 'garden'"
 runner browser.mjs
 runner workflow.mjs
 runner service.mjs validate
