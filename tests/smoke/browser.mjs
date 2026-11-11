@@ -383,6 +383,9 @@ try {
   await dialog.getByLabel(/密码/).fill("incorrect");
   await dialog.getByRole("button", { name: "登录", exact: true }).click();
   await dialog.getByText("账号或密码错误。").waitFor();
+  await dialog.getByRole("tab", { name: "注册账号" }).click();
+  await dialog.getByRole("textbox", { name: /显示名称/ }).waitFor();
+  assert.equal(await dialog.getByText("账号或密码错误。").count(), 0);
   await page.keyboard.press("Escape");
   await preview.waitFor();
   assert.equal(await submit.isEnabled(), true);

@@ -20,6 +20,15 @@ const labels: Record<TaskStatus, string> = {
 const dateFormat = new Intl.DateTimeFormat("zh-CN", { dateStyle: "short", timeStyle: "short" });
 const taskAcceptedKey = "studio:task-accepted";
 
+function unreadCursor(cursor: string | null, loadedPages: Map<string, string | null>): string | null {
+  while (cursor !== null) {
+    const next = loadedPages.get(cursor);
+    if (next === undefined) break;
+    cursor = next;
+  }
+  return cursor;
+}
+
 export function useHistory(templateId?: string) {
   const { user } = useSession();
   const username = user?.username ?? "";
@@ -31,8 +40,8 @@ export function useHistory(templateId?: string) {
   const [request, setRequest] = useState<{ cursor: string | null; attempt: number }>({ cursor: null, attempt: 0 });
   const [scan, setScan] = useState(0);
   const [nextCursor, setNextCursor] = useState<string | null>(null);
-  const loadedMore = useRef(false);
-  const firstPageIds = useRef(new Set<string>());
+  const loadedPages = useRef(new Map<string, string | null>());
+  const continuationByTask = useRef(new Map<string, string | null>());
   const feed = useRef<ReturnType<typeof createTaskFeed> | null>(null);
   const readingHistory = useRef(true);
   const refreshPending = useRef(false);
@@ -75,15 +84,16 @@ export function useHistory(templateId?: string) {
       .then((page) => {
         if (controller.signal.aborted) return;
         feed.current?.add(page.items);
-        if (request.cursor) {
-          loadedMore.current = true;
-          setNextCursor((current) => current === request.cursor ? page.nextCursor : current);
-        } else {
-          const overlaps = page.items.some((task) => firstPageIds.current.has(task.id));
-          // A full page of new tasks can leave a gap before the previously loaded records.
-          if (!loadedMore.current || !overlaps) setNextCursor(page.nextCursor);
-          firstPageIds.current = new Set(page.items.map((task) => task.id));
-        }
+        // The last item can connect this page to a range that is already loaded.
+        const tail = page.items.at(-1);
+        const knownContinuation = tail && continuationByTask.current.get(tail.id);
+        const continuation = page.nextCursor === null || knownContinuation === undefined
+          ? page.nextCursor : knownContinuation;
+        const pages = loadedPages.current;
+        const next = unreadCursor(continuation, pages);
+        for (const task of page.items) continuationByTask.current.set(task.id, next);
+        if (request.cursor) pages.set(request.cursor, next);
+        setNextCursor((current) => request.cursor ? unreadCursor(current, pages) : next);
       })
       .catch((problem) => {
         if (controller.signal.aborted) return;

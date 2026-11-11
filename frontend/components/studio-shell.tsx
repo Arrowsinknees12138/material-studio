@@ -18,6 +18,7 @@ interface Session {
   sessionError: string | null;
   actionError: string | null;
   authenticate: (credentials: Credentials) => void;
+  clearActionError: () => void;
   refresh: () => void;
 }
 
@@ -131,6 +132,10 @@ export function StudioShell({ children }: { children: ReactNode }) {
     setActionError(null);
   }
 
+  function clearActionError() {
+    setActionError(null);
+  }
+
   async function changeSession(credentials?: Credentials, focusWorkspace = false) {
     if (busy || action.current) return;
     focusAfterLogin.current = focusWorkspace;
@@ -177,7 +182,7 @@ export function StudioShell({ children }: { children: ReactNode }) {
   }
 
   return (
-    <SessionContext.Provider value={{ user, busy, sessionReady, sessionError, actionError,
+    <SessionContext.Provider value={{ user, busy, sessionReady, sessionError, actionError, clearActionError,
       authenticate: (credentials) => void changeSession(credentials, true), refresh }}>
       <a href="#main" className="skip-link">跳转到主要内容</a>
       <AppBar position="static" elevation={0} color="transparent" className="site-header">
@@ -242,23 +247,26 @@ export function StudioShell({ children }: { children: ReactNode }) {
               </Paper>
               <Box id={accessId} hidden={!showAccess}>
                 {showAccess && <AccountAccess busy={busy} error={actionError} current={user.username}
+                  clearError={clearActionError}
                   submit={(credentials) => void changeSession(credentials)} />}
               </Box>
               {actionError && !showAccess && <Alert severity="error">{actionError}</Alert>}
               {sessionError && <SessionCheckNotice />}
             </Stack>
           ) : !sessionReady || sessionError ? <SessionCheckNotice />
-            : <AccountAccess busy={busy} error={actionError} submit={(credentials) => void changeSession(credentials)} />}
+            : <AccountAccess busy={busy} error={actionError} clearError={clearActionError}
+                submit={(credentials) => void changeSession(credentials)} />}
         </DialogContent>
       </Dialog>
     </SessionContext.Provider>
   );
 }
 
-function AccountAccess({ busy, error, current, submit }: {
+function AccountAccess({ busy, error, current, clearError, submit }: {
   busy: boolean;
   error: string | null;
   current?: string;
+  clearError: () => void;
   submit: (credentials: Credentials) => void;
 }) {
   const [mode, setMode] = useState<"login" | "register">("login");
@@ -276,7 +284,8 @@ function AccountAccess({ busy, error, current, submit }: {
   }
   return (
     <Stack spacing={1.5}>
-      <Tabs value={mode} onChange={(_event, value) => setMode(value)} aria-label="账号操作" variant="fullWidth">
+      <Tabs value={mode} onChange={(_event, value) => { setMode(value); clearError(); }}
+        aria-label="账号操作" variant="fullWidth">
         <Tab value="login" label={current ? "切换账号" : "账号登录"} disabled={busy} id={formId + "-login"} aria-controls={formId} />
         <Tab value="register" label="注册账号" disabled={busy} id={formId + "-register"} aria-controls={formId} />
       </Tabs>
@@ -318,7 +327,7 @@ function SessionCheckNotice() {
 }
 
 export function AccountPrompt() {
-  const { busy, sessionReady, sessionError, actionError, authenticate } = useSession();
+  const { busy, sessionReady, sessionError, actionError, authenticate, clearActionError } = useSession();
   if (!sessionReady || sessionError) {
     return <Paper className="account-prompt panel" variant="outlined"><SessionCheckNotice /></Paper>;
   }
@@ -326,7 +335,7 @@ export function AccountPrompt() {
     <Paper className="account-prompt panel" variant="outlined">
       <Typography variant="h6" component="h2">登录后开始制作</Typography>
       <Typography color="text.secondary" variant="body2" sx={{ mb: 1.5 }}>素材和制作记录保存在你的账号下。</Typography>
-      <AccountAccess busy={busy} error={actionError} submit={authenticate} />
+      <AccountAccess busy={busy} error={actionError} clearError={clearActionError} submit={authenticate} />
     </Paper>
   );
 }

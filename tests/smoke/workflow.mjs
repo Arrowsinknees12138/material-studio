@@ -201,6 +201,7 @@ try {
   const loadMore = history.getByRole("button", { name: "加载更多记录" });
   await loadMore.click();
   await olderPageStarted.promise;
+  rows = [...records(22, 22), ...rows];
   await history.evaluate(() => window.dispatchEvent(new Event("focus")));
   const headRefresh = history.waitForResponse((response) => {
     const url = new URL(response.url());
@@ -208,6 +209,7 @@ try {
   });
   failOlderPage.resolve();
   assert.equal((await headRefresh).status(), 200);
+  await history.getByText("分页记录 22", { exact: true }).waitFor();
   await history.getByText("较早的记录读取失败。", { exact: true }).waitFor();
   const retriedPage = history.waitForRequest((request) =>
     new URL(request.url()).searchParams.get("cursor") === interruptedCursor);
@@ -216,14 +218,16 @@ try {
   await history.getByText("分页记录 1", { exact: true }).waitFor();
   assert.equal(await history.getByText("较早的记录读取失败。", { exact: true }).count(), 0);
   await loadMore.waitFor({ state: "hidden" });
+  assert.equal(await history.locator(".task-card").count(), 22);
 
-  rows = [...records(22, 42), ...rows];
+  rows = [...records(23, 43), ...rows];
   await history.getByRole("button", { name: "刷新历史记录" }).click();
-  await history.getByText("分页记录 42", { exact: true }).waitFor();
-  assert.equal(await history.getByText("分页记录 22", { exact: true }).count(), 0);
+  await history.getByText("分页记录 43", { exact: true }).waitFor();
+  assert.equal(await history.getByText("分页记录 23", { exact: true }).count(), 0);
   await loadMore.click();
-  await history.getByText("分页记录 22", { exact: true }).waitFor();
-  assert.equal(await history.locator(".task-card").count(), 42);
+  await history.getByText("分页记录 23", { exact: true }).waitFor();
+  assert.equal(await history.locator(".task-card").count(), 43);
+  await loadMore.waitFor({ state: "hidden" });
 
   await history.getByRole("button", { name: "当前账号与切换" }).click();
   const dialog = history.getByRole("dialog");
@@ -248,6 +252,21 @@ try {
   await dialog.waitFor({ state: "hidden" });
   await history.getByRole("button", { name: "使用周野" }).waitFor();
   assert.deepEqual(await (await history.request.get("/api/session")).json(), { user: null });
+
+  await history.getByRole("textbox", { name: /用户名/ }).fill("zhou");
+  await history.getByLabel(/密码/).fill("incorrect");
+  await history.getByRole("button", { name: "登录", exact: true }).click();
+  await history.getByText("账号或密码错误。").waitFor();
+  await history.getByRole("tab", { name: "注册账号" }).click();
+  assert.equal(await history.getByText("账号或密码错误。").count(), 0);
+  await history.getByRole("textbox", { name: /用户名/ }).fill("invalid-registration");
+  await history.getByRole("textbox", { name: /显示名称/ }).fill("测试");
+  await history.getByLabel(/密码/).fill("short");
+  await history.getByRole("button", { name: "注册并登录" }).click();
+  const registrationError = history.getByText("密码至少 8 个字符，UTF-8 编码最多 72 字节。", { exact: true });
+  await registrationError.waitFor();
+  await history.getByRole("tab", { name: "账号登录" }).click();
+  assert.equal(await registrationError.count(), 0);
   console.log("Catalog, idempotent retry, cross-tab tracking, session and thumbnail recovery, and history pagination verified.");
 } finally {
   await browser.close();
