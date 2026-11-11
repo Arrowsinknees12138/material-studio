@@ -2,7 +2,7 @@
 
 /* eslint-disable @next/next/no-img-element -- Private images need the browser session cookie. */
 import Link from "next/link";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Close, History, OpenInFull, Refresh } from "@mui/icons-material";
 import { Alert, Box, Button, ButtonBase, Card, Dialog, DialogContent, DialogTitle, IconButton, Paper, Stack, Typography } from "@mui/material";
 import { ApiError, api, errorMessage, stageLabels, type Task, type TaskPage, type TaskStatus } from "../lib/api";
@@ -18,6 +18,7 @@ const labels: Record<TaskStatus, string> = {
 };
 
 const dateFormat = new Intl.DateTimeFormat("zh-CN", { dateStyle: "short", timeStyle: "short" });
+const taskAcceptedKey = "studio:task-accepted";
 
 export function useHistory(templateId?: string) {
   const { user } = useSession();
@@ -32,6 +33,25 @@ export function useHistory(templateId?: string) {
   const loadedMore = useRef(false);
   const firstPageIds = useRef(new Set<string>());
   const feed = useRef<ReturnType<typeof createTaskFeed> | null>(null);
+  const readingHistory = useRef(true);
+  const refreshPending = useRef(false);
+
+  const load = useCallback((cursor: string | null) => {
+    readingHistory.current = true;
+    setError(null);
+    setLoading(true);
+    setRequest((current) => ({ cursor, attempt: current.attempt + 1 }));
+  }, []);
+
+  const refreshTracking = useCallback(() => {
+    setTrackingError(null);
+    setScan((value) => value + 1);
+  }, []);
+
+  const refresh = useCallback(() => {
+    load(null);
+    refreshTracking();
+  }, [load, refreshTracking]);
 
   useEffect(() => {
     const instance = createTaskFeed((ids, signal) => {
@@ -64,9 +84,18 @@ export function useHistory(templateId?: string) {
         }
       })
       .catch((problem) => { if (!controller.signal.aborted) setError(errorMessage(problem)); })
-      .finally(() => { if (!controller.signal.aborted) setLoading(false); });
+      .finally(() => {
+        if (controller.signal.aborted) return;
+        if (refreshPending.current) {
+          refreshPending.current = false;
+          refresh();
+        } else {
+          readingHistory.current = false;
+          setLoading(false);
+        }
+      });
     return () => controller.abort();
-  }, [request, templateId, username]);
+  }, [refresh, request, templateId, username]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -91,32 +120,52 @@ export function useHistory(templateId?: string) {
     return () => controller.abort();
   }, [scan, templateId, username]);
 
-  function load(cursor: string | null) {
-    setError(null);
-    setLoading(true);
-    setRequest((current) => ({ cursor, attempt: current.attempt + 1 }));
-  }
+  useEffect(() => {
+    function refreshAfterChange() {
+      if (readingHistory.current) refreshPending.current = true;
+      else refresh();
+    }
 
-  function refreshTracking() {
-    setTrackingError(null);
-    setScan((value) => value + 1);
+    function onStorage(event: StorageEvent) {
+      if (event.key === taskAcceptedKey && event.newValue) refreshAfterChange();
+    }
+
+    window.addEventListener("focus", refreshAfterChange);
+    window.addEventListener("storage", onStorage);
+    return () => {
+      window.removeEventListener("focus", refreshAfterChange);
+      window.removeEventListener("storage", onStorage);
+    };
+  }, [refresh]);
+
+  function accept(task: Task) {
+    feed.current?.add([task]);
+    try {
+      // Each tab re-reads its own history with its current session.
+      localStorage.setItem(taskAcceptedKey, crypto.getRandomValues(new Uint32Array(2)).join("-"));
+    } catch {
+      // Returning focus also refreshes history when storage is unavailable.
+    }
   }
 
   return {
     entries, loading, error, trackingError, nextCursor, refreshTracking,
-    accept: (task: Task) => feed.current?.add([task]),
+    accept,
     retry: (id: string) => feed.current?.retry(id),
     retryPage: () => load(request.cursor),
     loadMore: () => { if (nextCursor) load(nextCursor); },
-    refresh: () => { load(null); refreshTracking(); },
+    refresh,
   };
 }
 
-function ResultThumbnail({ url, title, open }: { url: string; title: string; open: () => void }) {
-  const [failed, setFailed] = useState(false);
+function ResultThumbnail({ url, title, retryRevision, open }: {
+  url: string; title: string; retryRevision: number; open: () => void;
+}) {
+  const [failedRevision, setFailedRevision] = useState<number | null>(null);
   return (
     <ButtonBase className="result-thumb" onClick={open} aria-label={"预览" + title + "的结果"}>
-      {failed ? "打开预览" : <img src={url} alt="" onError={() => setFailed(true)} />}
+      {failedRevision === retryRevision ? "打开预览"
+        : <img src={url} alt="" onError={() => setFailedRevision(retryRevision)} />}
       <OpenInFull className="expand-result" fontSize="small" />
     </ButtonBase>
   );
@@ -129,7 +178,9 @@ type ResultImage =
 
 const resultPreviewError = "结果图片暂时无法加载。";
 
-function ResultPreview({ url, title, focusClose }: { url: string; title: string; focusClose: () => void }) {
+function ResultPreview({ url, title, focusClose, onLoaded }: {
+  url: string; title: string; focusClose: () => void; onLoaded: (url: string) => void;
+}) {
   const { user } = useSession();
   const username = user?.username ?? "";
   const [attempt, setAttempt] = useState(0);
@@ -160,7 +211,7 @@ function ResultPreview({ url, title, focusClose }: { url: string; title: string;
     <>
       {image.state === "loading" && <Typography className="empty-box" role="status">正在加载结果图片…</Typography>}
       {src && <img src={src} alt={title + "制作结果"} hidden={image.state !== "ready"}
-        onLoad={() => setImage({ state: "ready", src })}
+        onLoad={() => { setImage({ state: "ready", src }); onLoaded(url); }}
         onError={() => setImage({ state: "failed", message: resultPreviewError })} />}
     </>
   );
@@ -169,6 +220,12 @@ function ResultPreview({ url, title, focusClose }: { url: string; title: string;
 export function HistoryPanel({ history, full = false }: { history: ReturnType<typeof useHistory>; full?: boolean }) {
   const closePreview = useRef<HTMLButtonElement>(null);
   const [preview, setPreview] = useState<{ url: string; title: string } | null>(null);
+  const [refreshCount, setRefreshCount] = useState(0);
+  const [loadedPreviews, setLoadedPreviews] = useState<Record<string, number>>({});
+
+  function retryPreviewThumbnail(url: string) {
+    setLoadedPreviews((current) => ({ ...current, [url]: (current[url] ?? 0) + 1 }));
+  }
 
   return (
     <Paper component="section" variant="outlined" className="panel history-panel" aria-labelledby="history-heading">
@@ -178,7 +235,8 @@ export function HistoryPanel({ history, full = false }: { history: ReturnType<ty
           {full ? "全部记录" : "当前模板记录"}
         </Typography>
         <IconButton aria-label="刷新历史记录" title="刷新历史记录" size="small"
-          onClick={history.refresh} disabled={history.loading}><Refresh fontSize="small" /></IconButton>
+          onClick={() => { setRefreshCount((current) => current + 1); history.refresh(); }}
+          disabled={history.loading}><Refresh fontSize="small" /></IconButton>
       </Stack>
       {history.error && <Alert severity="warning"
         action={<Button size="small" onClick={history.retryPage}>重新加载</Button>}>{history.error}</Alert>}
@@ -202,7 +260,7 @@ export function HistoryPanel({ history, full = false }: { history: ReturnType<ty
             return (
               <Card component="article" variant="outlined" className="task-card" key={task.id}>
                 {url ? (
-                  <ResultThumbnail url={url} title={task.templateTitle}
+                  <ResultThumbnail url={url} title={task.templateTitle} retryRevision={refreshCount + (loadedPreviews[url] ?? 0)}
                     open={() => setPreview({ url, title: task.templateTitle })} />
                 ) : (
                   <Stack className="task-stage" spacing={0.75} sx={{ alignItems: "center", justifyContent: "center" }}>
@@ -239,7 +297,8 @@ export function HistoryPanel({ history, full = false }: { history: ReturnType<ty
               <IconButton ref={closePreview} aria-label="关闭结果预览" onClick={() => setPreview(null)}><Close /></IconButton>
             </DialogTitle>
             <DialogContent>
-              <ResultPreview url={preview.url} title={preview.title} focusClose={() => closePreview.current?.focus()} />
+              <ResultPreview url={preview.url} title={preview.title} onLoaded={retryPreviewThumbnail}
+                focusClose={() => closePreview.current?.focus()} />
             </DialogContent>
           </>
         )}

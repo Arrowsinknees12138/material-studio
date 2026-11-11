@@ -88,8 +88,14 @@ try {
   assert.ok(persisted.ok());
   assert.deepEqual((await persisted.json()).map((task) => task.id), [first.id]);
 
+  const otherTab = await context.newPage();
+  await otherTab.goto("/history");
+  await otherTab.locator(".task-card").first().waitFor();
+  assert.equal(await otherTab.locator(".task-card").count(), 1);
   const second = await submitTask();
   assert.equal(second.status, "QUEUED");
+  await otherTab.locator(".task-card").nth(1).waitFor();
+  await otherTab.close();
   ids.push(first.id, second.id);
   assert.notEqual(ids[0], ids[1]);
   const retry = page.getByRole("button", { name: "重新查询" }).first();
@@ -126,8 +132,32 @@ try {
     await sleep(300);
   }
   const history = await context.newPage();
+  await history.route("**/api/session", (route) => route.fulfill({ status: 503 }), { times: 1 });
+  const resultPath = "/api/tasks/" + unattended + "/result";
+  let thumbnailReads = 0;
+  await history.route((url) => url.pathname === resultPath, (route) => {
+    if (route.request().resourceType() === "image" && ++thumbnailReads <= 2) {
+      return route.fulfill({ status: 503 });
+    }
+    return route.continue();
+  });
   await history.goto("/history");
-  await history.locator('img[src="/api/tasks/' + unattended + '/result"]').waitFor();
+  await history.getByText("暂时无法确认登录状态").waitFor();
+  assert.equal(await history.getByRole("button", { name: "使用周野" }).count(), 0);
+  await history.getByRole("button", { name: "重新检查账号" }).click();
+  const fallback = history.getByText("打开预览", { exact: true });
+  await fallback.waitFor();
+  const reloadedThumbnail = history.waitForResponse((response) =>
+    new URL(response.url()).pathname === resultPath && response.request().resourceType() === "image");
+  await history.getByRole("button", { name: "刷新历史记录" }).click();
+  assert.equal((await reloadedThumbnail).status(), 503);
+  await fallback.click();
+  await history.getByRole("dialog").getByRole("img", { name: "沙丘日记制作结果" }).waitFor();
+  await history.keyboard.press("Escape");
+  await history.getByRole("dialog").waitFor({ state: "hidden" });
+  await history.waitForFunction((path) => [...document.images].some((image) =>
+    image.getAttribute("src") === path && image.naturalWidth > 0), resultPath);
+  assert.equal(thumbnailReads, 3);
   await history.goto("/templates/nonexistent");
   await history.getByRole("heading", { name: "找不到这个模板" }).waitFor();
 
@@ -165,7 +195,7 @@ try {
   await loadMore.click();
   await history.getByText("分页记录 22", { exact: true }).waitFor();
   assert.equal(await history.locator(".task-card").count(), 42);
-  console.log("Catalog, idempotent retry, query recovery, refresh and close lifecycle, and disjoint history pagination verified.");
+  console.log("Catalog, idempotent retry, cross-tab tracking, session and thumbnail recovery, and history pagination verified.");
 } finally {
   await browser.close();
 }

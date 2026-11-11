@@ -70,10 +70,10 @@ class Accounts {
         if (!USERNAME.matcher(username).matches()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "用户名须为 3–40 个英文字母、数字、下划线或连字符，并以英文字母或数字开头。");
         }
-        if (name.isEmpty() || name.length() > 80 || name.codePoints().anyMatch(Character::isISOControl)) {
+        if (name.isEmpty() || name.codePointCount(0, name.length()) > 80 || name.codePoints().anyMatch(Character::isISOControl)) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "请输入 1–80 个字符的显示名称。");
         }
-        if (!passwordFits(password) || password.length() < 8 || password.isBlank()) {
+        if (!passwordFits(password) || password.codePointCount(0, password.length()) < 8 || password.isBlank()) {
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "密码至少 8 个字符，UTF-8 编码最多 72 字节。");
         }
         try {

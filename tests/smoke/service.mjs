@@ -173,12 +173,16 @@ async function validate() {
   assert.ok(terminal.filter((task) => task.id !== first.id).every((task) => task.status === "FAILED"));
   console.log("Catalog, upload boundaries, concurrent idempotency, three stages and terminal states verified.");
 
-  const credentials = { username: "personal-smoke", password: "studio-private-26" };
-  const registration = { ...credentials, username: " Personal-Smoke ", displayName: " 个人验收 " };
+  const emoji = String.fromCodePoint(0x1f642);
+  const displayName = emoji.repeat(80);
+  const credentials = { username: "personal-smoke", password: emoji.repeat(8) };
+  const registration = { ...credentials, username: " Personal-Smoke ", displayName: " " + displayName + " " };
+  await request(web, "/api/session/register", { status: 400, json: { ...registration, password: emoji.repeat(4) } });
+  await request(web, "/api/session/register", { status: 400, json: { ...registration, displayName: displayName + emoji } });
   await request(web, "/api/session/register", { status: 400, json: { ...registration, password: "短".repeat(25) } });
   const registered = await request(web, "/api/session/register", { json: registration, status: 201 });
   const personal = registered.headers.getSetCookie()[0].split(";")[0];
-  assert.deepEqual(await registered.json(), { user: { username: credentials.username, displayName: "个人验收" } });
+  assert.deepEqual(await registered.json(), { user: { username: credentials.username, displayName } });
   await request(web, "/api/session/register", { json: registration, status: 409 });
   const personalAsset = await upload(web, personal);
   const personalId = await submit(web, personal, personalAsset, 0);

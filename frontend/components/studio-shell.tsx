@@ -14,7 +14,9 @@ type Credentials = { username: string; password: string; displayName?: string };
 interface Session {
   user: User | null;
   busy: boolean;
-  error: string | null;
+  sessionReady: boolean;
+  sessionError: string | null;
+  actionError: string | null;
   authenticate: (credentials: Credentials) => void;
   refresh: () => void;
 }
@@ -30,7 +32,9 @@ export function useSession() {
 export function StudioShell({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [busy, setBusy] = useState(true);
-  const [error, setError] = useState<string | null>(null);
+  const [sessionReady, setSessionReady] = useState(false);
+  const [sessionError, setSessionError] = useState<string | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [accountOpen, setAccountOpen] = useState(false);
   const [showAccess, setShowAccess] = useState(false);
@@ -52,10 +56,11 @@ export function StudioShell({ children }: { children: ReactNode }) {
         .then((response) => {
           if (!controller.signal.aborted) {
             setUser(response.user);
-            setError(null);
+            setSessionReady(true);
+            setSessionError(null);
           }
         })
-        .catch((problem) => { if (!controller.signal.aborted) setError(errorMessage(problem)); })
+        .catch((problem) => { if (!controller.signal.aborted) setSessionError(errorMessage(problem)); })
         .finally(() => { if (!controller.signal.aborted) setBusy(false); });
     }
 
@@ -65,6 +70,9 @@ export function StudioShell({ children }: { children: ReactNode }) {
         return;
       }
       setUser(null);
+      setSessionReady(false);
+      setSessionError(null);
+      setActionError(null);
       setBusy(true);
       check();
     }
@@ -94,14 +102,15 @@ export function StudioShell({ children }: { children: ReactNode }) {
   }, [busy, user]);
 
   function refresh() {
-    setError(null);
+    if (!user) setSessionReady(false);
+    setSessionError(null);
     setBusy(true);
     setRefreshKey((key) => key + 1);
   }
 
   function closeAccount() {
     setAccountOpen(false);
-    setError(null);
+    setActionError(null);
   }
 
   async function changeSession(credentials?: Credentials, focusWorkspace = false) {
@@ -111,7 +120,7 @@ export function StudioShell({ children }: { children: ReactNode }) {
     checking.current?.abort();
     action.current = controller;
     setBusy(true);
-    setError(null);
+    setActionError(null);
     try {
       if (credentials) {
         const path = credentials.displayName === undefined ? "/session" : "/session/register";
@@ -122,6 +131,8 @@ export function StudioShell({ children }: { children: ReactNode }) {
         if (!controller.signal.aborted) setUser(null);
       }
       if (!controller.signal.aborted) {
+        setSessionReady(true);
+        setSessionError(null);
         setAccountOpen(false);
         try {
           localStorage.setItem(sessionChangeKey, crypto.getRandomValues(new Uint32Array(2)).join("-"));
@@ -130,12 +141,13 @@ export function StudioShell({ children }: { children: ReactNode }) {
         }
       }
     } catch (problem) {
-      if (!controller.signal.aborted) setError(errorMessage(problem));
+      if (!controller.signal.aborted) setActionError(errorMessage(problem));
     } finally {
       action.current = null;
       if (!controller.signal.aborted && checkAfterAction.current) {
         checkAfterAction.current = false;
         setUser(null);
+        setSessionReady(false);
         refresh();
       } else if (!controller.signal.aborted) {
         setBusy(false);
@@ -144,7 +156,7 @@ export function StudioShell({ children }: { children: ReactNode }) {
   }
 
   return (
-    <SessionContext.Provider value={{ user, busy, error,
+    <SessionContext.Provider value={{ user, busy, sessionReady, sessionError, actionError,
       authenticate: (credentials) => void changeSession(credentials, true), refresh }}>
       <a href="#main" className="skip-link">跳转到主要内容</a>
       <AppBar position="static" elevation={0} color="transparent" className="site-header">
@@ -153,7 +165,7 @@ export function StudioShell({ children }: { children: ReactNode }) {
             <AutoAwesome fontSize="small" />
           </IconButton>
           <Button color="inherit" aria-label="当前账号与切换" aria-haspopup="dialog" onClick={() => {
-            setError(null);
+            setActionError(null);
             setShowAccess(false);
             setAccountOpen(true);
           }}>
@@ -162,21 +174,20 @@ export function StudioShell({ children }: { children: ReactNode }) {
             </Avatar>
             <Box component="span" sx={{ ml: { xs: 0.5, sm: 0 }, maxWidth: { xs: "7ch", sm: "16ch" },
               overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-              {busy ? "连接中" : user?.displayName ?? "登录 / 注册"}
+              {busy ? "连接中" : user?.displayName ?? (sessionError ? "账号待确认" : "登录 / 注册")}
             </Box>
           </Button>
         </Toolbar>
       </AppBar>
-      {error && !accountOpen && (user || pathname === "/templates") && (
-        <Alert severity="error" className="shell-error" action={<Button color="inherit" onClick={refresh}>重新检查账号</Button>}>
-          {error}
-        </Alert>
+      {!accountOpen && (user || pathname === "/templates") && (
+        sessionError ? <Box className="shell-error"><SessionCheckNotice /></Box>
+          : actionError && <Alert severity="error" className="shell-error">{actionError}</Alert>
       )}
       <main id="main" tabIndex={-1} ref={main}>{children}</main>
       <Dialog open={accountOpen} onClose={closeAccount} fullWidth maxWidth="sm"
         aria-labelledby="account-dialog-title" slotProps={{ paper: { className: "account-dialog" } }}>
         <DialogTitle id="account-dialog-title" className="dialog-heading">
-          {user ? "账户设置" : "登录 / 注册"}
+          {user ? "账户设置" : !sessionReady || sessionError ? "检查账号" : "登录 / 注册"}
           <IconButton aria-label="关闭账户设置" onClick={closeAccount}><Close /></IconButton>
         </DialogTitle>
         <DialogContent>
@@ -201,7 +212,7 @@ export function StudioShell({ children }: { children: ReactNode }) {
                 <Divider />
                 <Button color="inherit" startIcon={<SwitchAccountOutlined />} disabled={busy}
                   aria-expanded={showAccess} aria-controls={accessId}
-                  onClick={() => { setError(null); setShowAccess((open) => !open); }}>
+                  onClick={() => { setActionError(null); setShowAccess((open) => !open); }}>
                   切换账号<ChevronRight className="account-arrow" fontSize="small" />
                 </Button>
                 <Divider />
@@ -209,12 +220,14 @@ export function StudioShell({ children }: { children: ReactNode }) {
                   onClick={() => void changeSession()}>退出登录</Button>
               </Paper>
               <Box id={accessId} hidden={!showAccess}>
-                {showAccess && <AccountAccess busy={busy} error={error} current={user.username}
+                {showAccess && <AccountAccess busy={busy} error={actionError} current={user.username}
                   submit={(credentials) => void changeSession(credentials)} />}
               </Box>
-              {error && !showAccess && <Alert severity="error">{error}</Alert>}
+              {actionError && !showAccess && <Alert severity="error">{actionError}</Alert>}
+              {sessionError && <SessionCheckNotice />}
             </Stack>
-          ) : <AccountAccess busy={busy} error={error} submit={(credentials) => void changeSession(credentials)} />}
+          ) : !sessionReady || sessionError ? <SessionCheckNotice />
+            : <AccountAccess busy={busy} error={actionError} submit={(credentials) => void changeSession(credentials)} />}
         </DialogContent>
       </Dialog>
     </SessionContext.Provider>
@@ -273,13 +286,26 @@ function AccountAccess({ busy, error, current, submit }: {
   );
 }
 
+function SessionCheckNotice() {
+  const { sessionError, refresh } = useSession();
+  return sessionError ? (
+    <Alert severity="warning" action={<Button color="inherit" onClick={refresh}>重新检查账号</Button>}>
+      <Typography sx={{ fontWeight: 600 }}>暂时无法确认登录状态</Typography>
+      {sessionError}
+    </Alert>
+  ) : <Typography role="status">正在检查账号…</Typography>;
+}
+
 export function AccountPrompt() {
-  const { busy, error, authenticate } = useSession();
+  const { busy, sessionReady, sessionError, actionError, authenticate } = useSession();
+  if (!sessionReady || sessionError) {
+    return <Paper className="account-prompt panel" variant="outlined"><SessionCheckNotice /></Paper>;
+  }
   return (
     <Paper className="account-prompt panel" variant="outlined">
       <Typography variant="h6" component="h2">登录后开始制作</Typography>
       <Typography color="text.secondary" variant="body2" sx={{ mb: 1.5 }}>素材和制作记录保存在你的账号下。</Typography>
-      <AccountAccess busy={busy} error={error} submit={authenticate} />
+      <AccountAccess busy={busy} error={actionError} submit={authenticate} />
     </Paper>
   );
 }
