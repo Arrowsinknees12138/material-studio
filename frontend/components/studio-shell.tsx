@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import { AccountCircleOutlined, AutoAwesome, ChevronRight, Close, History, Logout, SwitchAccountOutlined } from "@mui/icons-material";
 import { Alert, AppBar, Avatar, Box, Button, Dialog, DialogContent, DialogTitle, Divider, IconButton, Paper, Stack, Tab, Tabs, TextField, Toolbar, Typography } from "@mui/material";
 import { createContext, type FormEvent, type ReactNode, useContext, useEffect, useId, useRef, useState } from "react";
-import { api, errorMessage, jsonBody, sessionCheckEvent, type User } from "../lib/api";
+import { ApiError, api, errorMessage, jsonBody, sessionCheckEvent, type User } from "../lib/api";
 
 const sessionChangeKey = "studio:session-changed";
 const demos = [{ username: "lin", displayName: "林夏" }, { username: "zhou", displayName: "周野" }];
@@ -22,6 +22,14 @@ interface Session {
 }
 
 const SessionContext = createContext<Session | null>(null);
+
+function notifySessionChange() {
+  try {
+    localStorage.setItem(sessionChangeKey, crypto.getRandomValues(new Uint32Array(2)).join("-"));
+  } catch {
+    // Focus rechecks the session when storage is unavailable.
+  }
+}
 
 export function useSession() {
   const session = useContext(SessionContext);
@@ -42,6 +50,7 @@ export function StudioShell({ children }: { children: ReactNode }) {
   const action = useRef<AbortController | null>(null);
   const checking = useRef<AbortController | null>(null);
   const checkAfterAction = useRef(false);
+  const confirmingLogout = useRef(false);
   const main = useRef<HTMLElement>(null);
   const focusAfterLogin = useRef(false);
   const pathname = usePathname();
@@ -58,6 +67,15 @@ export function StudioShell({ children }: { children: ReactNode }) {
             setUser(response.user);
             setSessionReady(true);
             setSessionError(null);
+            if (confirmingLogout.current) {
+              confirmingLogout.current = false;
+              if (response.user) {
+                setActionError("当前账号仍处于登录状态，请重试退出。");
+              } else {
+                setAccountOpen(false);
+                notifySessionChange();
+              }
+            }
           }
         })
         .catch((problem) => { if (!controller.signal.aborted) setSessionError(errorMessage(problem)); })
@@ -134,14 +152,17 @@ export function StudioShell({ children }: { children: ReactNode }) {
         setSessionReady(true);
         setSessionError(null);
         setAccountOpen(false);
-        try {
-          localStorage.setItem(sessionChangeKey, crypto.getRandomValues(new Uint32Array(2)).join("-"));
-        } catch {
-          // Focus rechecks the session when storage is unavailable.
-        }
+        notifySessionChange();
       }
     } catch (problem) {
-      if (!controller.signal.aborted) setActionError(errorMessage(problem));
+      if (!controller.signal.aborted) {
+        if (!credentials && problem instanceof ApiError && (problem.status === 0 || problem.status >= 500)) {
+          confirmingLogout.current = true;
+          checkAfterAction.current = true;
+        } else {
+          setActionError(errorMessage(problem));
+        }
+      }
     } finally {
       action.current = null;
       if (!controller.signal.aborted && checkAfterAction.current) {

@@ -73,6 +73,8 @@ record Submission(String templateId, List<String> assetIds, UUID requestId, Task
 @Service
 class Tasks {
     static final int MAX_DELAY_MS = 30_000;
+    private static final Instant MIN_TASK_TIMESTAMP = Instant.ofEpochSecond(1);
+    private static final Instant TASK_TIMESTAMP_END = Instant.ofEpochSecond((long) Integer.MAX_VALUE + 1);
     private final TaskMapper tasks;
     private final AssetMapper assets;
     private final Catalog catalog;
@@ -159,6 +161,10 @@ class Tasks {
             try {
                 if (parts.length != 2) throw new IllegalArgumentException();
                 beforeTime = Instant.parse(parts[0]);
+                if (beforeTime.isBefore(MIN_TASK_TIMESTAMP) || !beforeTime.isBefore(TASK_TIMESTAMP_END)
+                        || beforeTime.getNano() % 1_000_000 != 0) {
+                    throw new IllegalArgumentException();
+                }
                 beforeId = taskId(parts[1]);
             } catch (DateTimeParseException | IllegalArgumentException invalid) {
                 throw badRequest("历史记录游标无效。");

@@ -50,11 +50,23 @@ class TaskQueriesTest {
     }
 
     @ParameterizedTest
-    @ValueSource(strings = {"", "2026-01-01T00:00:00Z", "bad-date|" + FIRST, "2026-01-01T00:00:00Z|1-1-1-1-1"})
+    @ValueSource(strings = {"", "2026-01-01T00:00:00Z", "bad-date|" + FIRST, "2026-01-01T00:00:00Z|1-1-1-1-1",
+            "1970-01-01T00:00:00.999Z|" + FIRST, "2038-01-19T03:14:08Z|" + FIRST,
+            "2026-01-01T00:00:00.000001Z|" + FIRST, "+10000-01-01T00:00:00Z|" + FIRST})
     void rejectsInvalidHistoryCursorsWithoutReadingTheDatabase(String cursor) {
         assertEquals(HttpStatus.BAD_REQUEST, assertThrows(ResponseStatusException.class,
                 () -> tasks.page(OWNER, null, false, cursor, 20)).getStatusCode());
         verifyNoInteractions(mapper);
+    }
+
+    @ParameterizedTest
+    @ValueSource(strings = {"1970-01-01T00:00:01Z", "2038-01-19T03:14:07.999Z"})
+    void acceptsTheTimestampColumnBoundaries(String timestamp) {
+        Instant expected = Instant.parse(timestamp);
+        when(mapper.pageOwned(OWNER, null, false, expected, FIRST, 21)).thenReturn(List.of());
+
+        assertEquals(new TaskPage(List.of(), null), tasks.page(OWNER, null, false, timestamp + "|" + FIRST, 20));
+        verify(mapper).pageOwned(OWNER, null, false, expected, FIRST, 21);
     }
 
     @ParameterizedTest

@@ -171,6 +171,9 @@ async function validate() {
   assert.equal(terminal.length, 4);
   assert.equal(terminal.find((task) => task.id === first.id).status, "SUCCEEDED");
   assert.ok(terminal.filter((task) => task.id !== first.id).every((task) => task.status === "FAILED"));
+  const invalidCursor = new URLSearchParams({ cursor: "+10000-01-01T00:00:00Z|" + first.id });
+  const invalidHistory = await request(web, "/api/tasks/history?" + invalidCursor, { cookie, status: 400 });
+  assert.equal((await invalidHistory.json()).message, "历史记录游标无效。");
   console.log("Catalog, upload boundaries, concurrent idempotency, three stages and terminal states verified.");
 
   const emoji = String.fromCodePoint(0x1f642);

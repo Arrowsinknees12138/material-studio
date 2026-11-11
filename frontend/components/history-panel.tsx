@@ -26,6 +26,7 @@ export function useHistory(templateId?: string) {
   const [entries, setEntries] = useState<TaskEntry[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [olderPageError, setOlderPageError] = useState<{ cursor: string; message: string } | null>(null);
   const [trackingError, setTrackingError] = useState<string | null>(null);
   const [request, setRequest] = useState<{ cursor: string | null; attempt: number }>({ cursor: null, attempt: 0 });
   const [scan, setScan] = useState(0);
@@ -38,7 +39,8 @@ export function useHistory(templateId?: string) {
 
   const load = useCallback((cursor: string | null) => {
     readingHistory.current = true;
-    setError(null);
+    if (cursor) setOlderPageError(null);
+    else setError(null);
     setLoading(true);
     setRequest((current) => ({ cursor, attempt: current.attempt + 1 }));
   }, []);
@@ -75,7 +77,7 @@ export function useHistory(templateId?: string) {
         feed.current?.add(page.items);
         if (request.cursor) {
           loadedMore.current = true;
-          setNextCursor(page.nextCursor);
+          setNextCursor((current) => current === request.cursor ? page.nextCursor : current);
         } else {
           const overlaps = page.items.some((task) => firstPageIds.current.has(task.id));
           // A full page of new tasks can leave a gap before the previously loaded records.
@@ -83,7 +85,12 @@ export function useHistory(templateId?: string) {
           firstPageIds.current = new Set(page.items.map((task) => task.id));
         }
       })
-      .catch((problem) => { if (!controller.signal.aborted) setError(errorMessage(problem)); })
+      .catch((problem) => {
+        if (controller.signal.aborted) return;
+        const message = errorMessage(problem);
+        if (request.cursor) setOlderPageError({ cursor: request.cursor, message });
+        else setError(message);
+      })
       .finally(() => {
         if (controller.signal.aborted) return;
         if (refreshPending.current) {
@@ -149,10 +156,11 @@ export function useHistory(templateId?: string) {
   }
 
   return {
-    entries, loading, error, trackingError, nextCursor, refreshTracking,
+    entries, loading, error, olderPageError, trackingError, nextCursor, refreshTracking,
     accept,
     retry: (id: string) => feed.current?.retry(id),
-    retryPage: () => load(request.cursor),
+    retryPage: () => load(null),
+    retryOlderPage: () => { if (olderPageError) load(olderPageError.cursor); },
     loadMore: () => { if (nextCursor) load(nextCursor); },
     refresh,
   };
@@ -161,11 +169,33 @@ export function useHistory(templateId?: string) {
 function ResultThumbnail({ url, title, retryRevision, open }: {
   url: string; title: string; retryRevision: number; open: () => void;
 }) {
-  const [failedRevision, setFailedRevision] = useState<number | null>(null);
+  const [image, setImage] = useState<{
+    revision: number; attempt: number; state: "loading" | "ready" | "failed";
+  }>({ revision: retryRevision, attempt: 0, state: "loading" });
+  if (image.revision !== retryRevision) {
+    setImage(image.state === "ready" ? { ...image, revision: retryRevision }
+      : { revision: retryRevision, attempt: image.attempt + 1, state: "loading" });
+  }
+
+  const { attempt, state } = image;
+  const finish = useCallback((next: "ready" | "failed") => {
+    setImage((current) => current.attempt === attempt && current.state === "loading"
+      ? { ...current, state: next } : current);
+  }, [attempt]);
+
+  useEffect(() => {
+    if (state !== "loading") return;
+    const timeout = setTimeout(() => finish("failed"), 8000);
+    return () => clearTimeout(timeout);
+  }, [finish, state]);
+
   return (
     <ButtonBase className="result-thumb" onClick={open} aria-label={"预览" + title + "的结果"}>
-      {failedRevision === retryRevision ? "打开预览"
-        : <img src={url} alt="" onError={() => setFailedRevision(retryRevision)} />}
+      {state === "failed" ? "打开预览" : (
+        <img key={attempt} src={url + (attempt ? "?thumbnailAttempt=" + attempt : "")}
+          alt="" hidden={state !== "ready"} onLoad={() => finish("ready")} onError={() => finish("failed")} />
+      )}
+      {state === "loading" && <Typography variant="caption" role="status">正在加载缩略图…</Typography>}
       <OpenInFull className="expand-result" fontSize="small" />
     </ButtonBase>
   );
@@ -239,7 +269,7 @@ export function HistoryPanel({ history, full = false }: { history: ReturnType<ty
           disabled={history.loading}><Refresh fontSize="small" /></IconButton>
       </Stack>
       {history.error && <Alert severity="warning"
-        action={<Button size="small" onClick={history.retryPage}>重新加载</Button>}>{history.error}</Alert>}
+        action={<Button size="small" onClick={history.retryPage} disabled={history.loading}>重新加载</Button>}>{history.error}</Alert>}
       {history.trackingError && <Alert severity="warning"
         action={<Button size="small" onClick={history.refreshTracking}>重试跟踪</Button>}>
         暂时无法恢复进行中的任务 · {history.trackingError}
@@ -285,6 +315,10 @@ export function HistoryPanel({ history, full = false }: { history: ReturnType<ty
           })}
         </Box>
       )}
+      {history.olderPageError && <Alert severity="warning" sx={{ mt: 2 }}
+        action={<Button size="small" onClick={history.retryOlderPage} disabled={history.loading}>重试加载更多</Button>}>
+        {history.olderPageError.message}
+      </Alert>}
       {history.nextCursor && <Box sx={{ mt: 2 }}>
         <Button variant="outlined" onClick={history.loadMore} disabled={history.loading}>加载更多记录</Button>
       </Box>}

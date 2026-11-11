@@ -134,10 +134,15 @@ try {
   const history = await context.newPage();
   await history.route("**/api/session", (route) => route.fulfill({ status: 503 }), { times: 1 });
   const resultPath = "/api/tasks/" + unattended + "/result";
+  const firstThumbnail = Promise.withResolvers();
+  const retriedThumbnail = Promise.withResolvers();
+  const releaseThumbnails = Promise.withResolvers();
   let thumbnailReads = 0;
-  await history.route((url) => url.pathname === resultPath, (route) => {
+  await history.route((url) => url.pathname === resultPath, async (route) => {
     if (route.request().resourceType() === "image" && ++thumbnailReads <= 2) {
-      return route.fulfill({ status: 503 });
+      (thumbnailReads === 1 ? firstThumbnail : retriedThumbnail).resolve(route.request());
+      await releaseThumbnails.promise;
+      return route.fulfill({ status: 503 }).catch(() => {});
     }
     return route.continue();
   });
@@ -146,17 +151,18 @@ try {
   assert.equal(await history.getByRole("button", { name: "使用周野" }).count(), 0);
   await history.getByRole("button", { name: "重新检查账号" }).click();
   const fallback = history.getByText("打开预览", { exact: true });
-  await fallback.waitFor();
-  const reloadedThumbnail = history.waitForResponse((response) =>
-    new URL(response.url()).pathname === resultPath && response.request().resourceType() === "image");
+  await firstThumbnail.promise;
+  await history.getByText("正在加载缩略图…", { exact: true }).first().waitFor();
   await history.getByRole("button", { name: "刷新历史记录" }).click();
-  assert.equal((await reloadedThumbnail).status(), 503);
+  assert.equal(new URL((await retriedThumbnail.promise).url()).searchParams.get("thumbnailAttempt"), "1");
+  await fallback.waitFor();
+  releaseThumbnails.resolve();
   await fallback.click();
   await history.getByRole("dialog").getByRole("img", { name: "沙丘日记制作结果" }).waitFor();
   await history.keyboard.press("Escape");
   await history.getByRole("dialog").waitFor({ state: "hidden" });
   await history.waitForFunction((path) => [...document.images].some((image) =>
-    image.getAttribute("src") === path && image.naturalWidth > 0), resultPath);
+    new URL(image.src).pathname === path && image.naturalWidth > 0), resultPath);
   assert.equal(thumbnailReads, 3);
   await history.goto("/templates/nonexistent");
   await history.getByRole("heading", { name: "找不到这个模板" }).waitFor();
@@ -173,10 +179,19 @@ try {
     });
   }
   let rows = records(1, 21);
+  const olderPageStarted = Promise.withResolvers();
+  const failOlderPage = Promise.withResolvers();
+  let interruptedCursor;
   await history.route((url) => url.pathname === "/api/tasks/history", async (route) => {
     const query = new URL(route.request().url()).searchParams;
     if (query.has("active")) return route.fulfill({ json: { items: [], nextCursor: null } });
     const cursor = query.get("cursor");
+    if (cursor && !interruptedCursor) {
+      interruptedCursor = cursor;
+      olderPageStarted.resolve();
+      await failOlderPage.promise;
+      return route.fulfill({ status: 503, json: { message: "较早的记录读取失败。" } });
+    }
     const start = cursor ? rows.findIndex((item) => item.id === cursor) + 1 : 0;
     const items = rows.slice(start, start + 20);
     const nextCursor = start + items.length < rows.length ? items.at(-1).id : null;
@@ -185,7 +200,21 @@ try {
   await history.goto("/history");
   const loadMore = history.getByRole("button", { name: "加载更多记录" });
   await loadMore.click();
+  await olderPageStarted.promise;
+  await history.evaluate(() => window.dispatchEvent(new Event("focus")));
+  const headRefresh = history.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === "/api/tasks/history" && !url.searchParams.has("active") && !url.searchParams.has("cursor");
+  });
+  failOlderPage.resolve();
+  assert.equal((await headRefresh).status(), 200);
+  await history.getByText("较早的记录读取失败。", { exact: true }).waitFor();
+  const retriedPage = history.waitForRequest((request) =>
+    new URL(request.url()).searchParams.get("cursor") === interruptedCursor);
+  await history.getByRole("button", { name: "重试加载更多" }).click();
+  await retriedPage;
   await history.getByText("分页记录 1", { exact: true }).waitFor();
+  assert.equal(await history.getByText("较早的记录读取失败。", { exact: true }).count(), 0);
   await loadMore.waitFor({ state: "hidden" });
 
   rows = [...records(22, 42), ...rows];
@@ -195,6 +224,30 @@ try {
   await loadMore.click();
   await history.getByText("分页记录 22", { exact: true }).waitFor();
   assert.equal(await history.locator(".task-card").count(), 42);
+
+  await history.getByRole("button", { name: "当前账号与切换" }).click();
+  const dialog = history.getByRole("dialog");
+  const signOut = dialog.getByRole("button", { name: "退出登录" });
+  await history.route("**/api/session/logout", (route) => route.abort("connectionreset"), { times: 1 });
+  await signOut.click();
+  await dialog.getByText("当前账号仍处于登录状态，请重试退出。").waitFor();
+
+  let signedOutOnServer = false;
+  await history.route("**/api/session/logout", async (route) => {
+    const response = await route.fetch();
+    assert.equal(response.status(), 204);
+    signedOutOnServer = true;
+    await route.abort("connectionreset");
+  }, { times: 1 });
+  await history.route("**/api/session", (route) => signedOutOnServer
+    ? route.fulfill({ status: 503 }) : route.fallback(), { times: 1 });
+  await signOut.click();
+  await dialog.getByText("暂时无法确认登录状态").waitFor();
+  assert.equal(await history.locator(".task-card").count(), 0);
+  await dialog.getByRole("button", { name: "重新检查账号" }).click();
+  await dialog.waitFor({ state: "hidden" });
+  await history.getByRole("button", { name: "使用周野" }).waitFor();
+  assert.deepEqual(await (await history.request.get("/api/session")).json(), { user: null });
   console.log("Catalog, idempotent retry, cross-tab tracking, session and thumbnail recovery, and history pagination verified.");
 } finally {
   await browser.close();
